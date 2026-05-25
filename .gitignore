@@ -36,6 +36,10 @@ yarn-error.log*
 !.env.local.example
 !.env.example
 
+# MCP — contains bearer tokens / server URLs
+.mcp.json
+.claude/settings.local.json
+
 # vercel
 .vercel
 
