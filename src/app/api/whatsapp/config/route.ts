@@ -146,12 +146,20 @@ export async function POST(request: Request) {
       )
     }
 
-    // Encrypt sensitive tokens before storing
+    // Encrypt sensitive tokens before storing. verify_token is only
+    // re-encrypted when the client explicitly sent a new value; an
+    // empty/null field on update means "leave it alone" (the form
+    // doesn't re-show the existing verify token, so blank-on-edit
+    // would otherwise wipe it).
+    const hasNewVerifyToken =
+      typeof verify_token === 'string' && verify_token.trim().length > 0
     let encryptedAccessToken: string
-    let encryptedVerifyToken: string | null
+    let encryptedVerifyToken: string | null = null
     try {
       encryptedAccessToken = encrypt(access_token)
-      encryptedVerifyToken = verify_token ? encrypt(verify_token) : null
+      if (hasNewVerifyToken) {
+        encryptedVerifyToken = encrypt(verify_token)
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown encryption error'
       console.error('Encryption failed:', message)
@@ -172,17 +180,20 @@ export async function POST(request: Request) {
       .maybeSingle()
 
     if (existing) {
+      const updatePayload: Record<string, unknown> = {
+        phone_number_id,
+        waba_id: waba_id || null,
+        access_token: encryptedAccessToken,
+        status: 'connected',
+        connected_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+      if (hasNewVerifyToken) {
+        updatePayload.verify_token = encryptedVerifyToken
+      }
       const { error: updateError } = await supabase
         .from('whatsapp_config')
-        .update({
-          phone_number_id,
-          waba_id: waba_id || null,
-          access_token: encryptedAccessToken,
-          verify_token: encryptedVerifyToken,
-          status: 'connected',
-          connected_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
+        .update(updatePayload)
         .eq('user_id', user.id)
 
       if (updateError) {
