@@ -201,6 +201,10 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     contactPhone: contact.phone,
     hasuraUrl: agent.hasura_url,
     hasuraAdminSecret,
+    whatsapp: {
+      phoneNumberId: waCfg.phone_number_id,
+      accessToken,
+    },
   };
 
   const allowedTools = filterTools(ETHIOPIAN_MAIDS_TOOLS, agent.enabled_tools);
@@ -569,9 +573,21 @@ Qualification questions to gather (one per turn, skip if already answered):
   3. Main duties (childcare / cooking / elderly care / general)?
   4. When do you need her to start?
   5. Any language or experience preference?
-Recommendation: when you have the emirate AND at least one of {duties, live-in/out},
-call search_maids with the criteria. Present 2-3 candidates by first name + age +
-country + key skill. NEVER share full names, IDs, or contact info until booking.
+
+Recommendation flow — TWO TOOLS, not one:
+  a) Call search_maids with the criteria you've gathered.
+  b) Pick the top 1-3 candidate ids from the result.
+  c) Call send_maid_cards({ maid_ids: [...] }) — this sends each maid
+     as a photo+caption WhatsApp message (a card). DO NOT skip this
+     step; do NOT just list candidates in text.
+  d) Your FINAL text reply is ONE short sentence — "Want details on
+     any of them? Reply with the name." — NEVER repeat the candidate
+     info in text after sending cards (the customer already saw them).
+
+NEVER share full names, IDs, or contact info in text. The cards
+already include first name + nationality + experience + skills +
+salary range + photo.
+
 For pricing: call get_pricing(country: "UAE").`,
 
   job_seeker: `Customer IS a MAID looking for WORK (or someone applying on her behalf).

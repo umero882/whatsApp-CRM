@@ -83,6 +83,54 @@ export interface SendTextMessageArgs {
  * Send a free-form WhatsApp text message.
  * Only works inside the 24-hour customer service window.
  */
+export interface SendImageMessageArgs {
+  phoneNumberId: string
+  accessToken: string
+  to: string
+  /** Public HTTPS URL to the image (Meta fetches it). JPG/PNG, ≤5MB. */
+  imageUrl: string
+  /** Optional caption, ≤1024 chars. WhatsApp markdown supported. */
+  caption?: string
+  contextMessageId?: string
+}
+
+/**
+ * Send an image message (photo + caption). Used by the AI agent to
+ * render maid candidate cards inline in the conversation.
+ *
+ * Meta will fetch the image from `imageUrl` server-side, so the URL
+ * must be publicly accessible. Firebase Storage signed URLs work.
+ */
+export async function sendImageMessage(
+  args: SendImageMessageArgs
+): Promise<MetaSendResult> {
+  const { phoneNumberId, accessToken, to, imageUrl, caption, contextMessageId } = args
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const image: Record<string, unknown> = { link: imageUrl }
+  if (caption) image.caption = caption
+  const body: Record<string, unknown> = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'image',
+    image,
+  }
+  if (contextMessageId) body.context = { message_id: contextMessageId }
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API image send error: ${response.status}`)
+  }
+  const data = await response.json()
+  return { messageId: data.messages[0].id }
+}
+
 export async function sendTextMessage(
   args: SendTextMessageArgs
 ): Promise<MetaSendResult> {

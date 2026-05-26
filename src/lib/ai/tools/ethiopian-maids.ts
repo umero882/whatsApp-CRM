@@ -13,6 +13,8 @@
  */
 
 import { makeHasuraClient, HasuraError } from './hasura';
+import { sendImageMessage } from '@/lib/whatsapp/meta-api';
+import { sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
 import type { ToolHandler, ToolContext } from './registry';
 
 function ensureHasura(ctx: ToolContext) {
@@ -454,9 +456,184 @@ export const escalateToHuman: ToolHandler = {
   },
 };
 
+// ----------------------------------------------------------------
+// send_maid_cards — render candidates as image+caption messages on
+// WhatsApp. Lets the conversation feel like a card deck instead of
+// a wall of text. Call this AFTER search_maids when you want to
+// show 1-3 candidates to the customer.
+// ----------------------------------------------------------------
+const CARDS_FETCH_GQL = /* GraphQL */ `
+  query MaidsForCards($ids: [String!]!) {
+    maid_profiles_public(where: { id: { _in: $ids } }) {
+      id
+      first_name
+      full_name
+      nationality
+      country
+      experience_years
+      languages
+      skills
+      preferred_salary_min
+      preferred_salary_max
+      preferred_currency
+      profile_photo_url
+      available_from
+      live_in_preference
+    }
+  }
+`;
+
+interface MaidCardRow {
+  id: string;
+  first_name: string | null;
+  full_name: string | null;
+  nationality: string | null;
+  country: string | null;
+  experience_years: number | null;
+  languages: string[] | null;
+  skills: string[] | null;
+  preferred_salary_min: number | null;
+  preferred_salary_max: number | null;
+  preferred_currency: string | null;
+  profile_photo_url: string | null;
+  available_from: string | null;
+  live_in_preference: boolean | null;
+}
+
+function buildMaidCaption(m: MaidCardRow): string {
+  const name = (m.first_name || m.full_name || 'Candidate').trim();
+  const origin = m.nationality || m.country || 'Ethiopian';
+  const expr = typeof m.experience_years === 'number' ? `${m.experience_years} yr${m.experience_years === 1 ? '' : 's'} experience` : 'experience available';
+  const skills = (m.skills ?? []).slice(0, 4).join(', ');
+  const langs = (m.languages ?? []).join(', ');
+  const sMin = m.preferred_salary_min;
+  const sMax = m.preferred_salary_max;
+  const cur = m.preferred_currency || 'AED';
+  let salary = '';
+  if (sMin && sMax && sMin !== sMax) salary = `${sMin.toLocaleString()}–${sMax.toLocaleString()} ${cur}/mo`;
+  else if (sMin) salary = `${sMin.toLocaleString()} ${cur}/mo`;
+  else if (sMax) salary = `up to ${sMax.toLocaleString()} ${cur}/mo`;
+  const liveIn = m.live_in_preference === true ? 'Live-in' : m.live_in_preference === false ? 'Live-out' : null;
+  const avail = m.available_from ? `Available from ${m.available_from}` : 'Available now';
+
+  const lines: string[] = [`*${name}* — ${origin}`, `🧰 ${expr}`];
+  if (skills) lines.push(`✅ ${skills}`);
+  if (langs) lines.push(`🗣️ ${langs}`);
+  if (salary) lines.push(`💰 ${salary}${liveIn ? ' · ' + liveIn : ''}`);
+  lines.push(`📅 ${avail}`);
+  return lines.join('\n');
+}
+
+export const sendMaidCards: ToolHandler = {
+  name: 'send_maid_cards',
+  description:
+    'Render 1–3 maid candidates as image+caption WhatsApp messages (cards), one per candidate. ' +
+    'ALWAYS call this when presenting candidates to the customer — do NOT also list them in plain text. ' +
+    'Each card shows the maid\'s photo, name, nationality, experience, top skills, languages, salary range, live-in preference, and availability. ' +
+    'After this tool succeeds, your final text reply should be a short question like "Want details on any of them? Reply with the name." — DO NOT repeat the candidate details in your text.',
+  parameters: {
+    type: 'object',
+    properties: {
+      maid_ids: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'IDs of maids to render (from a prior search_maids result). 1 to 3 ids max.',
+      },
+    },
+    required: ['maid_ids'],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const ids = Array.isArray(args.maid_ids) ? args.maid_ids.map(String).slice(0, 3) : [];
+    if (ids.length === 0) {
+      return { error: 'maid_ids must be a non-empty array of 1-3 ids from a recent search_maids result.' };
+    }
+    if (!ctx.whatsapp) {
+      return { error: 'WhatsApp send credentials are not available in this run. Cannot send cards.' };
+    }
+
+    const hasura = ensureHasura(ctx);
+    let rows: MaidCardRow[] = [];
+    try {
+      const data = await hasura.query<{ maid_profiles_public: MaidCardRow[] }>(CARDS_FETCH_GQL, { ids });
+      rows = data.maid_profiles_public ?? [];
+    } catch (e) {
+      if (e instanceof HasuraError) return { error: e.message };
+      throw e;
+    }
+    if (rows.length === 0) {
+      return { error: `No maids found for ids ${ids.join(', ')}. Re-run search_maids.` };
+    }
+
+    // Preserve the agent's intended order rather than DB order.
+    const ordered = ids
+      .map((id) => rows.find((r) => r.id === id))
+      .filter((r): r is MaidCardRow => Boolean(r));
+
+    const to = sanitizePhoneForMeta(ctx.contactPhone);
+    const sent: Array<{ maid_id: string; ok: boolean; reason?: string }> = [];
+
+    for (const m of ordered) {
+      const caption = buildMaidCaption(m);
+      if (!m.profile_photo_url) {
+        // Fall back to text-only persist + skip Meta image send. Tell
+        // the model so it can decide whether to mention the gap.
+        sent.push({ maid_id: m.id, ok: false, reason: 'no_photo' });
+        continue;
+      }
+      try {
+        const r = await sendImageMessage({
+          phoneNumberId: ctx.whatsapp.phoneNumberId,
+          accessToken: ctx.whatsapp.accessToken,
+          to,
+          imageUrl: m.profile_photo_url,
+          caption,
+        });
+        await ctx.supabase.from('messages').insert({
+          conversation_id: ctx.conversationId,
+          sender_type: 'agent',
+          agent_kind: 'ai',
+          content_type: 'image',
+          content_text: caption,
+          media_url: m.profile_photo_url,
+          message_id: r.messageId,
+          status: 'sent',
+        });
+        sent.push({ maid_id: m.id, ok: true });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn('[send_maid_cards] send failed for', m.id, msg);
+        sent.push({ maid_id: m.id, ok: false, reason: msg });
+      }
+    }
+
+    // Bump the conversation timestamp so the inbox sorts correctly.
+    if (sent.some((s) => s.ok)) {
+      await ctx.supabase
+        .from('conversations')
+        .update({
+          last_message_text: `[${sent.filter((s) => s.ok).length} candidate photo(s)]`,
+          last_message_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', ctx.conversationId);
+    }
+
+    return {
+      sent,
+      success_count: sent.filter((s) => s.ok).length,
+      note:
+        'Cards are now in the customer\'s WhatsApp. Your follow-up TEXT reply should be ONE short sentence ' +
+        'inviting the next step (e.g. "Want details on any of them? Reply with the name"). ' +
+        'Do NOT re-list the candidates in text — they already saw the cards.',
+    };
+  },
+};
+
 export const ETHIOPIAN_MAIDS_TOOLS: ToolHandler[] = [
   searchMaids,
   getMaidProfile,
+  sendMaidCards,
   listJobs,
   getPricing,
   escalateToHuman,
