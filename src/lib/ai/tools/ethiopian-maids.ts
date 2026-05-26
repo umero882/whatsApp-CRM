@@ -25,11 +25,11 @@ function ensureHasura(ctx: ToolContext) {
 }
 
 // ----------------------------------------------------------------
-// search_maids — query maid_profiles
+// search_maids — query maid_profiles_public (PUBLIC view, redacted fields)
 // ----------------------------------------------------------------
 const SEARCH_MAIDS_GQL = /* GraphQL */ `
-  query SearchMaids($where: maid_profiles_bool_exp!, $limit: Int!) {
-    maid_profiles(
+  query SearchMaids($where: maid_profiles_public_bool_exp!, $limit: Int!) {
+    maid_profiles_public(
       where: $where
       limit: $limit
       order_by: [{ updated_at: desc }]
@@ -38,14 +38,21 @@ const SEARCH_MAIDS_GQL = /* GraphQL */ `
       first_name
       full_name
       country
-      date_of_birth
+      nationality
       experience_years
       education_level
-      coc_level
+      languages
+      skills
+      special_skills
+      live_in_preference
+      preferred_salary_min
+      preferred_salary_max
+      preferred_currency
+      profile_photo_url
       availability_status
       available_from
       current_location
-      introduction_video_url
+      primary_profession
       about_me
     }
   }
@@ -55,19 +62,33 @@ export const searchMaids: ToolHandler = {
   name: 'search_maids',
   description:
     'Find available Ethiopian domestic workers (maids) matching the customer requirements. ' +
-    'Returns up to 5 candidates with name, country, experience years, education, and current location. ' +
+    'Returns up to 5 candidates with first name, age estimate, nationality, languages, skills, salary preference, and photo URL. ' +
     'Use this BEFORE recommending any specific maid — never fabricate candidates. ' +
-    'Do NOT call this for greetings or chit-chat — only when the customer has actually expressed interest in finding a maid.',
+    'Do NOT call this for greetings or chit-chat — only when the customer has expressed interest in hiring AND given at least one criterion (location, duties, or live-in preference).',
   parameters: {
     type: 'object',
     properties: {
-      country: {
-        type: 'string',
-        description: 'Country the maid is currently in (e.g. "Ethiopia", "UAE"). Optional — leave blank to search all.',
+      live_in_preference: {
+        type: 'boolean',
+        description: 'true for live-in maids, false for live-out. Omit if customer hasn\'t specified.',
+      },
+      languages: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Languages the maid should speak, e.g. ["English","Arabic"]. Omit if not specified.',
+      },
+      skills: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Required skills, e.g. ["childcare","cooking","cleaning","elderly_care"]. Omit if not specified.',
       },
       min_experience_years: {
         type: 'number',
         description: 'Minimum years of experience.',
+      },
+      max_salary_aed: {
+        type: 'number',
+        description: 'Maximum monthly salary in AED the customer is willing to pay.',
       },
       limit: {
         type: 'number',
@@ -83,26 +104,35 @@ export const searchMaids: ToolHandler = {
       availability_status: { _eq: 'available' },
       is_approved: { _eq: true },
     };
-    if (typeof args.country === 'string' && args.country.trim()) {
-      where.country = { _ilike: `%${args.country.trim()}%` };
+    if (typeof args.live_in_preference === 'boolean') {
+      where.live_in_preference = { _eq: args.live_in_preference };
     }
     if (typeof args.min_experience_years === 'number') {
       where.experience_years = { _gte: args.min_experience_years };
     }
+    if (typeof args.max_salary_aed === 'number') {
+      where.preferred_salary_max = { _lte: args.max_salary_aed };
+    }
+    if (Array.isArray(args.languages) && args.languages.length > 0) {
+      where.languages = { _has_keys_any: args.languages.map(String) };
+    }
+    if (Array.isArray(args.skills) && args.skills.length > 0) {
+      where.skills = { _has_keys_any: args.skills.map(String) };
+    }
     const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 10);
     try {
-      const data = await hasura.query<{ maid_profiles: unknown[] }>(
+      const data = await hasura.query<{ maid_profiles_public: unknown[] }>(
         SEARCH_MAIDS_GQL,
         { where, limit },
       );
-      const maids = data.maid_profiles ?? [];
+      const maids = data.maid_profiles_public ?? [];
       return {
         count: maids.length,
         maids,
         note:
           maids.length === 0
-            ? 'No matching candidates. Suggest broader criteria (e.g. drop country filter) or escalate.'
-            : 'Recommend at most 2-3 candidates. Mention their first name, country, and experience years. Do not share IDs or full names in chat.',
+            ? 'No matching candidates with these criteria. Offer to broaden (drop salary cap, drop language/skill filter) or take their details.'
+            : 'Recommend at most 2-3 of these candidates. Mention first name, nationality/country, experience years, key skills, and the salary range. If a photo_url exists, mention "I can share a photo if you\'d like".',
       };
     } catch (e) {
       if (e instanceof HasuraError) {
@@ -118,22 +148,30 @@ export const searchMaids: ToolHandler = {
 // ----------------------------------------------------------------
 const GET_MAID_GQL = /* GraphQL */ `
   query GetMaid($id: String!) {
-    maid_profiles_by_pk(id: $id) {
+    maid_profiles_public(where: { id: { _eq: $id } }, limit: 1) {
       id
       first_name
       full_name
       country
-      date_of_birth
+      nationality
       experience_years
       education_level
-      coc_level
+      languages
+      skills
+      special_skills
+      live_in_preference
+      preferred_salary_min
+      preferred_salary_max
+      preferred_currency
+      profile_photo_url
       availability_status
       available_from
       current_location
-      introduction_video_url
+      primary_profession
       about_me
       additional_notes
       contract_duration_preference
+      work_preferences
     }
   }
 `;
@@ -154,9 +192,10 @@ export const getMaidProfile: ToolHandler = {
     const hasura = ensureHasura(ctx);
     const id = String(args.maid_id);
     try {
-      const data = await hasura.query<{ maid_profiles_by_pk: unknown }>(GET_MAID_GQL, { id });
-      if (!data.maid_profiles_by_pk) return { error: `No maid with id ${id}.` };
-      return { maid: data.maid_profiles_by_pk };
+      const data = await hasura.query<{ maid_profiles_public: unknown[] }>(GET_MAID_GQL, { id });
+      const row = data.maid_profiles_public?.[0];
+      if (!row) return { error: `No maid with id ${id}.` };
+      return { maid: row };
     } catch (e) {
       if (e instanceof HasuraError) return { error: e.message };
       throw e;
@@ -165,28 +204,41 @@ export const getMaidProfile: ToolHandler = {
 };
 
 // ----------------------------------------------------------------
-// list_jobs — query agency_jobs
+// list_jobs — query the `jobs` table (sponsor-posted openings that
+// maids apply to). The agency_jobs table is for agency-managed
+// internal listings; the `jobs` table is the actual marketplace.
 // ----------------------------------------------------------------
 const LIST_JOBS_GQL = /* GraphQL */ `
-  query ListJobs($where: agency_jobs_bool_exp!, $limit: Int!) {
-    agency_jobs(
+  query ListJobs($where: jobs_bool_exp!, $limit: Int!) {
+    jobs(
       where: $where
       limit: $limit
-      order_by: [{ posted_date: desc }]
+      order_by: [{ created_at: desc }]
     ) {
       id
       title
+      country
+      city
       location
       job_type
+      contract_duration
       contract_duration_months
       salary_min
       salary_max
       currency
+      salary_period
       live_in_required
+      required_skills
+      languages_required
+      minimum_experience_years
+      preferred_nationality
       benefits
-      requirements
       description
+      start_date
       status
+      urgent
+      days_off_per_week
+      working_hours_per_day
     }
   }
 `;
@@ -194,17 +246,27 @@ const LIST_JOBS_GQL = /* GraphQL */ `
 export const listJobs: ToolHandler = {
   name: 'list_jobs',
   description:
-    'List active maid-placement jobs the agency has posted. Use when the customer (a maid) is looking for work, OR when a sponsor wants to see typical job postings.',
+    'List ACTIVE maid-placement jobs that sponsors have posted (the marketplace of openings). ' +
+    'Use when a customer who is a maid / job-seeker has told you their destination country or city. ' +
+    'Returns up to 5 jobs with title, location, salary range, live-in requirement, required skills, and experience minimum.',
   parameters: {
     type: 'object',
     properties: {
-      location: {
+      country: {
         type: 'string',
-        description: 'City or emirate filter, e.g. "Dubai". Optional.',
+        description: 'Destination country filter, e.g. "UAE", "Saudi Arabia". Optional.',
+      },
+      city: {
+        type: 'string',
+        description: 'Destination city filter, e.g. "Dubai", "Riyadh". Optional.',
       },
       live_in_required: {
         type: 'boolean',
         description: 'Only live-in jobs (true) / only live-out (false) / both (omit).',
+      },
+      min_experience_years: {
+        type: 'number',
+        description: 'Only jobs whose minimum_experience_years <= this. Use the maid\'s experience to filter.',
       },
       limit: { type: 'number', description: 'Max results 1-10. Default 5.' },
     },
@@ -214,22 +276,30 @@ export const listJobs: ToolHandler = {
   async handler(args, ctx) {
     const hasura = ensureHasura(ctx);
     const where: Record<string, unknown> = {
-      status: { _eq: 'open' },
+      status: { _eq: 'active' },
     };
-    if (typeof args.location === 'string' && args.location.trim()) {
-      where.location = { _ilike: `%${args.location.trim()}%` };
+    if (typeof args.country === 'string' && args.country.trim()) {
+      where.country = { _ilike: `%${args.country.trim()}%` };
+    }
+    if (typeof args.city === 'string' && args.city.trim()) {
+      where.city = { _ilike: `%${args.city.trim()}%` };
     }
     if (typeof args.live_in_required === 'boolean') {
       where.live_in_required = { _eq: args.live_in_required };
     }
+    if (typeof args.min_experience_years === 'number') {
+      where.minimum_experience_years = { _lte: args.min_experience_years };
+    }
     const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 10);
     try {
-      const data = await hasura.query<{ agency_jobs: unknown[] }>(LIST_JOBS_GQL, { where, limit });
-      const jobs = data.agency_jobs ?? [];
+      const data = await hasura.query<{ jobs: unknown[] }>(LIST_JOBS_GQL, { where, limit });
+      const jobs = data.jobs ?? [];
       return {
         count: jobs.length,
         jobs,
-        note: jobs.length === 0 ? 'No open jobs match. Suggest the customer leave their details.' : undefined,
+        note: jobs.length === 0
+          ? 'No active jobs match these criteria. Offer to broaden the search (different city/country, drop experience filter) or take the maid\'s details so our team contacts her when a matching role opens.'
+          : 'Present 1-3 of these jobs to the customer with: title, city/country, salary range with currency, live-in or live-out, key required skills. Ask which one she\'d like to apply for or want more detail on.',
       };
     } catch (e) {
       if (e instanceof HasuraError) return { error: e.message };
