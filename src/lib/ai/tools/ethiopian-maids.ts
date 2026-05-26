@@ -113,11 +113,20 @@ export const searchMaids: ToolHandler = {
     if (typeof args.max_salary_aed === 'number') {
       where.preferred_salary_max = { _lte: args.max_salary_aed };
     }
+    // languages/skills are text[] (LIST in GraphQL). For "match ANY",
+    // Postgres text[] supports overlap (&&) but Hasura's standard
+    // operators don't expose it directly. We OR multiple _contains
+    // checks (each _contains is "column @> [item]" — subset semantics
+    // that returns true when the row's array contains the item).
     if (Array.isArray(args.languages) && args.languages.length > 0) {
-      where.languages = { _has_keys_any: args.languages.map(String) };
+      where._or = (where._or as unknown[] ?? []).concat(
+        args.languages.map((l) => ({ languages: { _contains: [String(l)] } })),
+      );
     }
     if (Array.isArray(args.skills) && args.skills.length > 0) {
-      where.skills = { _has_keys_any: args.skills.map(String) };
+      where._or = (where._or as unknown[] ?? []).concat(
+        args.skills.map((s) => ({ skills: { _contains: [String(s)] } })),
+      );
     }
     const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 10);
     try {
