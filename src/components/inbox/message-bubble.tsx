@@ -13,6 +13,7 @@ import {
   LayoutTemplate,
   ImageOff,
   CornerDownLeft,
+  Bot,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ReplyQuote } from "./reply-quote";
@@ -278,6 +279,15 @@ export function MessageBubble({
             isAgent ? "justify-end" : "justify-start",
           )}
         >
+          {isAgent && message.agent_kind === 'ai' && (
+            <span
+              title="Sent by AI agent"
+              className="inline-flex items-center gap-0.5 rounded bg-white/10 px-1 py-px text-[9px] font-medium text-white/80"
+            >
+              <Bot className="h-2.5 w-2.5" />
+              AI
+            </span>
+          )}
           <span className="text-[10px] text-white/60">{time}</span>
           {isAgent && <StatusIcon status={message.status} />}
         </div>

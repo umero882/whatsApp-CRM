@@ -95,6 +95,8 @@ export type ContentType =
   | 'interactive';
 export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
 
+export type AgentKind = 'human' | 'ai';
+
 export interface Message {
   id: string;
   conversation_id: string;
@@ -115,6 +117,13 @@ export interface Message {
    * cue (renders with a "↩ button reply" affordance).
    */
   interactive_reply_id?: string;
+  /**
+   * Outbound-only label distinguishing human-sent from AI-sent messages.
+   * 'human' on all legacy rows (default in DB). Inbox UI uses this to
+   * stamp a robot icon on AI bubbles so agents can audit at a glance.
+   * Meaningless when `sender_type === 'customer'`.
+   */
+  agent_kind?: AgentKind;
 }
 
 export type ReactionActor = 'customer' | 'agent';

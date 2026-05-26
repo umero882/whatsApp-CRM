@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Settings, MessageSquare, Tag, User, Palette, Sparkles } from 'lucide-react';
+import { Settings, MessageSquare, Tag, User, Palette, Sparkles, Bot } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { WhatsAppConfig } from '@/components/settings/whatsapp-config';
 import { TemplateManager } from '@/components/settings/template-manager';
@@ -11,11 +11,13 @@ import { PasswordForm } from '@/components/settings/password-form';
 import { SessionsCard } from '@/components/settings/sessions-card';
 import { AppearancePanel } from '@/components/settings/appearance-panel';
 import { AIProviderConfig } from '@/components/settings/ai-provider-config';
+import { AIAgentConfig } from '@/components/settings/ai-agent-config';
 
 const TAB_VALUES = [
   'profile',
   'whatsapp',
   'ai',
+  'agent',
   'templates',
   'tags',
   'appearance',
@@ -77,6 +79,13 @@ export default function SettingsPage() {
             AI Provider
           </TabsTrigger>
           <TabsTrigger
+            value="agent"
+            className="data-active:bg-slate-800 data-active:text-primary text-slate-400"
+          >
+            <Bot className="size-4" />
+            AI Agent
+          </TabsTrigger>
+          <TabsTrigger
             value="templates"
             className="data-active:bg-slate-800 data-active:text-primary text-slate-400"
           >
@@ -111,6 +120,10 @@ export default function SettingsPage() {
 
         <TabsContent value="ai">
           <AIProviderConfig />
+        </TabsContent>
+
+        <TabsContent value="agent">
+          <AIAgentConfig />
         </TabsContent>
 
         <TabsContent value="templates">

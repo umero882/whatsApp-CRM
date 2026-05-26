@@ -1,6 +1,8 @@
 import type {
   ChatProvider,
   ChatCallOptions,
+  ChatCallToolsOptions,
+  ChatToolsResult,
   ProviderInit,
 } from './types';
 import { ProviderError } from './types';
@@ -48,6 +50,13 @@ export class OllamaProvider implements ChatProvider {
       throw new ProviderError('Ollama returned no content', res.status, raw);
     }
     return content;
+  }
+
+  async chatWithTools(_opts: ChatCallToolsOptions): Promise<ChatToolsResult> {
+    throw new ProviderError(
+      'Tool calling via Ollama is not implemented yet. ' +
+        'Use OpenAI / Anthropic / OpenRouter for the AI Agent for now, or open an issue if you have a tool-capable Ollama model you want supported (llama3.1+, qwen2.5+, mistral-nemo).',
+    );
   }
 
   async ping(): Promise<{ ok: true; model: string } | { ok: false; error: string }> {

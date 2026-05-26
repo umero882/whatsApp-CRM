@@ -6,6 +6,7 @@ import { normalizePhone, phonesMatch } from '@/lib/whatsapp/phone-utils'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
+import { runAgent } from '@/lib/ai/agent'
 
 // Lazy-initialized to avoid build-time crash when env vars are missing
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -650,6 +651,33 @@ async function processMessage(
         conversation_id: conversation.id,
       },
     }).catch((err) => console.error('[automations] dispatch failed:', err))
+  }
+
+  // ============================================================
+  // AI Reply Agent — fire-and-forget.
+  //
+  // Suppressed when an internal Flow run consumed the message
+  // (a structured chatbot is already steering the conversation).
+  // The agent itself re-checks ai_paused_until and is_enabled
+  // server-side; we don't gate here on those so this hook stays
+  // dumb and predictable. runAgent never throws — it returns
+  // a structured result and we just log it for observability.
+  // ============================================================
+  if (!flowConsumed) {
+    runAgent(conversation.id)
+      .then((r) => {
+        if (r.kind === 'skipped') {
+          // common, expected (no config, paused, etc.) — keep at debug level
+          console.log('[ai-agent] skipped:', r.reason)
+        } else if (r.kind === 'failed') {
+          console.warn('[ai-agent] failed:', r.reason)
+        } else if (r.kind === 'escalated') {
+          console.log('[ai-agent] escalated:', r.reason)
+        } else {
+          console.log('[ai-agent] replied in', r.turns, 'turn(s); tools:', r.toolsUsed.join(',') || 'none')
+        }
+      })
+      .catch((err) => console.error('[ai-agent] dispatch failed:', err))
   }
 }
 
