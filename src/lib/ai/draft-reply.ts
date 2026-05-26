@@ -5,7 +5,13 @@ import { makeProvider, ProviderError, type ProviderId } from './providers';
 const MAX_HISTORY_MESSAGES = 12;
 const MAX_SUGGESTIONS = 3;
 
-const DEFAULT_SYSTEM_PROMPT = `You are an expert customer-support agent replying in WhatsApp on behalf of a business.
+/**
+ * Default role prompt — used when the user hasn't customized
+ * `ai_provider_config.system_prompt`. Anything role/voice/business
+ * related goes here; the wire-format directive is appended
+ * separately so the JSON envelope can't be lost by user edits.
+ */
+const DEFAULT_ROLE_PROMPT = `You are an expert customer-support agent replying in WhatsApp on behalf of a business.
 Read the conversation and propose ${MAX_SUGGESTIONS} short, distinct replies the human agent could send next.
 
 Rules:
@@ -14,9 +20,18 @@ Rules:
 - No formal letter language. No "Dear Sir/Madam". No "I hope this message finds you well".
 - Don't repeat what the customer just said. Move the conversation forward.
 - If the customer asked a question, the first suggestion must answer it directly.
-- Vary the angle across the three suggestions: e.g. (1) answer + ask clarifying question, (2) answer + offer next step, (3) shorter empathetic acknowledgement.
-- Return JSON only, no prose, no markdown fences:
-  {"suggestions":["...","...","..."]}`;
+- Vary the angle across the three suggestions: e.g. (1) answer + ask clarifying question, (2) answer + offer next step, (3) shorter empathetic acknowledgement.`;
+
+/**
+ * Wire-format directive — ALWAYS appended to whatever role prompt
+ * is active (default or user-customized). This is the server's
+ * contract with the LLM and cannot be overridden by the user-facing
+ * system prompt, otherwise the JSON parser explodes.
+ */
+const FORMAT_DIRECTIVE = `## OUTPUT FORMAT — STRICT
+Return ONLY a single JSON object with this exact shape, no markdown fences, no prose before or after:
+{"suggestions":["reply 1","reply 2","reply 3"]}
+The array MUST contain exactly ${MAX_SUGGESTIONS} non-empty strings. Each string is the literal text the human agent would send to the customer — no labels, no numbering, no JSON inside the string.`;
 
 export interface AIProviderRow {
   provider: ProviderId;
@@ -110,14 +125,15 @@ export async function draftReply(
     })
     .join('\n');
 
-  const systemPrompt = row.system_prompt?.trim() || DEFAULT_SYSTEM_PROMPT;
+  const rolePrompt = row.system_prompt?.trim() || DEFAULT_ROLE_PROMPT;
+  const systemPrompt = `${rolePrompt}\n\n${FORMAT_DIRECTIVE}`;
 
   let rawText: string;
   try {
     rawText = await provider.chat({
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: `Conversation so far (oldest first):\n${transcript}` },
+        { role: 'user', content: `Conversation so far (oldest first):\n${transcript}\n\nRespond with the JSON object only.` },
       ],
       temperature: 0.5,
       maxTokens: 600,
@@ -132,6 +148,14 @@ export async function draftReply(
 
   const suggestions = parseSuggestions(rawText);
   if (!suggestions.length) {
+    // Log the raw output so we can diagnose without re-running. Trimmed
+    // to 800 chars to keep logs sane.
+    console.error(
+      '[ai/draft-reply] parse failed. provider=%s model=%s raw=%s',
+      row.provider,
+      row.model,
+      rawText.slice(0, 800),
+    );
     throw new DraftReplyError('Provider returned no valid suggestions', 'bad_response');
   }
 
@@ -169,7 +193,7 @@ function parseSuggestions(text: string): string[] {
     }
   }
 
-  // Last resort: pull the first {...suggestions...} block out.
+  // Pull the first {...suggestions...} block out.
   const match = stripped.match(/\{[\s\S]*"suggestions"[\s\S]*\}/);
   if (match) {
     try {
@@ -180,8 +204,19 @@ function parseSuggestions(text: string): string[] {
           .filter((s: string) => s.length > 0);
       }
     } catch {
-      // give up
+      // fall through
     }
   }
+
+  // Final fallback: numbered/bulleted lines. Catches models that
+  // ignore the JSON directive and emit "1. ... 2. ... 3. ..." prose.
+  // Strips leading numbering, bullets, and surrounding quotes.
+  const lines = stripped
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^\s*(?:[*•\-]|\d+[.)])\s+/, '').trim())
+    .map((l) => l.replace(/^["“'`]+|["”'`]+$/g, '').trim())
+    .filter((l) => l.length > 0 && l.length < 600);
+  if (lines.length >= 1) return lines.slice(0, 3);
+
   return [];
 }
