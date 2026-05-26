@@ -176,8 +176,8 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   }
 
   // ─── Stage + context ────────────────────────────────────────────────
-  const stage = detectStage(history);
   const intent = detectIntent(history);
+  const stage = detectStage(history, intent);
   const customerContext = buildCustomerContext(contact, history);
   const language = detectLanguage(last.content_text ?? '');
   const allowTools = TOOL_STAGES.has(stage);
@@ -371,25 +371,27 @@ function detectIntent(history: HistoryRow[]): Intent {
 
 /**
  * Conservative classifier — no LLM call, just pattern + history shape.
- * The model can still override its own behavior, but having a
- * well-grounded stage in the prompt + matching tool gating prevents
- * "search_maids on Hi" failure modes.
+ *
+ * Intent-aware: a sponsor needs to be qualified differently than a
+ * job-seeker, and the threshold for "we know enough to recommend" is
+ * different. Most importantly, we don't promote to RECOMMENDATION
+ * (and unlock tools) until we've actually gathered enough criteria,
+ * so the model can't search/list with empty filters.
  */
-function detectStage(history: HistoryRow[]): Stage {
+function detectStage(history: HistoryRow[], intent: Intent): Stage {
   if (history.length === 0) return 'GREETING';
 
   const last = history[history.length - 1];
   const lastText = (last?.content_text ?? '').trim();
   const lastTextLower = lastText.toLowerCase();
 
-  // Outbound count = how many times the AGENT side has spoken.
   const outboundCount = history.filter((m) => m.sender_type === 'agent').length;
   const customerTexts = history
     .filter((m) => m.sender_type === 'customer')
     .map((m) => (m.content_text ?? '').trim())
     .filter(Boolean);
 
-  // Time since last agent reply — if it's been 24h+, treat as fresh.
+  // Fresh conversation if it's been 24h+ since last agent reply.
   const lastAgent = [...history].reverse().find((m) => m.sender_type === 'agent');
   if (lastAgent) {
     const gap = Date.now() - new Date(lastAgent.created_at).getTime();
@@ -399,39 +401,48 @@ function detectStage(history: HistoryRow[]): Stage {
     return 'GREETING';
   }
 
-  // CLOSE indicators (customer ending the chat)
+  // CLOSE
   if (/^(thanks|thank you|ok|okay|bye|goodbye|cheers|👍|🙏|شكر|متشكر|መልካም)\b/i.test(lastTextLower)) {
     return 'CLOSE';
   }
 
-  // BOOKING / RECOMMENDATION cues — customer expressing concrete interest
-  if (/\b(book|interview|schedule|when can|how much|price|fee|cost|details|profile|photo|hire|salary|contract)\b/i.test(lastTextLower)) {
-    return outboundCount === 0 ? 'DISCOVERY' : 'BOOKING';
-  }
-  if (/\b(maid|housekeep|nanny|cook|elderly|childcare|cleaner|domestic|helper)\b/i.test(lastTextLower)) {
-    // They've named the product → ready for criteria/recommendation
-    return outboundCount === 0 ? 'DISCOVERY' : 'RECOMMENDATION';
-  }
-
-  // Greeting indicators
+  // GREETING (only if we haven't already greeted)
   const greetingPattern = /^(hi|hello|hey|salam|سلام|hola|hii|good (morning|afternoon|evening)|asalam|hi there|👋)/i;
   if (outboundCount === 0 && (greetingPattern.test(lastTextLower) || lastText.length <= 12)) {
     return 'GREETING';
   }
-
-  // We've greeted — figure out where we are by counting exchanges.
   if (outboundCount === 0) return 'GREETING';
-  if (outboundCount === 1) return 'DISCOVERY';
 
-  // Mid-conversation, no booking/recommendation cues → still qualifying.
-  // Look at agent's last reply: did it end with a question?
-  const lastAgentText = (lastAgent?.content_text ?? '').trim();
-  if (lastAgentText.endsWith('?')) return 'QUALIFICATION';
+  // BOOKING — explicit transactional cues (only meaningful AFTER we've
+  // gathered some criteria, hence the customerTexts.length guard)
+  if (
+    customerTexts.length >= 2 &&
+    /\b(book|interview|schedule|how much|price|fee|cost|details|profile|photo)\b/i.test(lastTextLower)
+  ) {
+    return 'BOOKING';
+  }
 
-  // After several turns with no booking signal, default to RECOMMENDATION
-  // (let the model decide if it has enough info to search).
-  if (customerTexts.length >= 3) return 'RECOMMENDATION';
+  // Intent-aware: how much do we need before RECOMMENDATION?
+  // Heuristic: enough info ≈ 2+ customer turns AND specific criteria
+  // mentioned. Otherwise stay in QUALIFICATION so tools remain gated.
+  const hasSponsorCriteria = /\b(dubai|abu\s*dhabi|sharjah|ajman|fujairah|ras\s*al\s*khaimah|umm\s*al\s*quwain|live[\s-]*in|live[\s-]*out|cook|cleaning|childcare|elderly|nanny|babys|housekeep|housekeeper)\b/i.test(
+    customerTexts.join(' '),
+  );
+  const hasJobSeekerCriteria = /\b(ethiopia|addis|kenya|uganda|dubai|uae|saudi|abu\s*dhabi|kuwait|qatar|bahrain|oman|years?\s*(of\s*)?experience|childcare|cook|cleaning|elderly)\b/i.test(
+    customerTexts.join(' '),
+  );
 
+  if (intent === 'sponsor' && customerTexts.length >= 2 && hasSponsorCriteria) {
+    return 'RECOMMENDATION';
+  }
+  if (intent === 'job_seeker' && customerTexts.length >= 2 && hasJobSeekerCriteria) {
+    return 'RECOMMENDATION';
+  }
+
+  // Already greeted; intent unknown or criteria not yet gathered.
+  // The DISCOVERY stage is for INTENT discovery; once intent is known,
+  // we move to QUALIFICATION (where tools are still gated).
+  if (intent === 'unknown') return 'DISCOVERY';
   return 'QUALIFICATION';
 }
 
