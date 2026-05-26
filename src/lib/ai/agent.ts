@@ -176,7 +176,8 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   }
 
   // ─── Stage + context ────────────────────────────────────────────────
-  const stage = detectStage(history);
+  const intent = detectIntent(history);
+  const stage = detectStage(history, intent);
   const customerContext = buildCustomerContext(contact, history);
   const language = detectLanguage(last.content_text ?? '');
   const allowTools = TOOL_STAGES.has(stage);
@@ -210,12 +211,12 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
 
   // ─── Compose system prompt ──────────────────────────────────────────
   const persona = (agent.system_prompt ?? '').trim() || defaultPersona(agent.business_name);
-  const runtimeBlock = buildRuntimeBlock(stage, language, customerContext, allowedTools, allowTools);
+  const runtimeBlock = buildRuntimeBlock(stage, intent, language, customerContext, allowedTools, allowTools);
   const directive = OPERATING_DIRECTIVE;
   const systemPrompt = [persona, runtimeBlock, directive].join('\n\n');
 
-  console.log('[ai-agent] start convo=%s stage=%s lang=%s tools=%d ctx={returning:%s,name:%s}',
-    conv.id, stage, language, stageTools.length, customerContext.isReturning, customerContext.name ?? '?');
+  console.log('[ai-agent] start convo=%s stage=%s intent=%s lang=%s tools=%d ctx={returning:%s,name:%s}',
+    conv.id, stage, intent, language, stageTools.length, customerContext.isReturning, customerContext.name ?? '?');
 
   // ─── Messages ───────────────────────────────────────────────────────
   const messages: AgentMessage[] = [{ role: 'system', content: systemPrompt }];
@@ -316,30 +317,81 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// Intent classification — sponsor vs job_seeker
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * Who are we talking to?
+ *
+ *   sponsor      — wants to HIRE a maid (family, individual, employer)
+ *   job_seeker   — IS a maid looking for work (the maid herself, or a
+ *                  recruiter on her behalf)
+ *   unknown      — no clear signal yet; agent must classify by asking
+ *
+ * Determined cheaply from history keywords. Once classified, the
+ * server "sticks" with the intent for the rest of the conversation —
+ * later turns that don't mention either side don't reset it.
+ */
+type Intent = 'sponsor' | 'job_seeker' | 'unknown';
+
+const SPONSOR_PATTERNS = [
+  /\b(i\s*(need|want|am\s*looking\s*for|require)\s*(a\s*)?(maid|nanny|housekeeper|domestic|helper|cook|elderly\s*care|cleaner|sirvienta|sirvient|خادم|مربية))\b/i,
+  /\b(hire|hiring|to\s*hire|want\s*to\s*hire|looking\s*to\s*hire)\b/i,
+  /\b(for\s*my\s*(kids|children|baby|family|parents|home|house))\b/i,
+  /\b(احتاج|ابغى|اريد|اطلب|ابحث\s*عن).*(خادم|مربية|عاملة)/i,
+];
+
+const JOB_SEEKER_PATTERNS = [
+  /\b(i\s*(need|want|am\s*looking\s*for)\s*(a\s*)?(job|work|position|placement|employment))\b/i,
+  /\b(looking\s*for\s*(a\s*)?(job|work|position|placement))\b/i,
+  /\b(i\s*am\s*a\s*(maid|nanny|housekeeper|cook|helper|domestic\s*worker))\b/i,
+  /\b(can\s*i\s*work|how\s*can\s*i\s*apply|i\s*want\s*to\s*work|apply\s*for\s*work)\b/i,
+  /\b(my\s*experience|years\s*of\s*experience)\b/i,
+  /\b(احتاج|ابغى|اريد|ابحث\s*عن|اطلب).*(عمل|شغل|وظيفة|وظائف)/i,
+  /\b(انا\s*خادمة|مربية\s*اطفال|ابحث\s*عن\s*عمل)/i,
+];
+
+function detectIntent(history: HistoryRow[]): Intent {
+  // Walk the customer messages in REVERSE (most recent first) so the
+  // latest signal wins — but stop at the first definitive classification
+  // to avoid re-flipping on later neutral messages.
+  const customerMsgs = history.filter((m) => m.sender_type === 'customer');
+  for (let i = customerMsgs.length - 1; i >= 0; i--) {
+    const text = (customerMsgs[i].content_text ?? '').toLowerCase().trim();
+    if (!text) continue;
+    if (SPONSOR_PATTERNS.some((p) => p.test(text))) return 'sponsor';
+    if (JOB_SEEKER_PATTERNS.some((p) => p.test(text))) return 'job_seeker';
+  }
+  return 'unknown';
+}
+
+// ════════════════════════════════════════════════════════════════════
 // Stage detection
 // ════════════════════════════════════════════════════════════════════
 
 /**
  * Conservative classifier — no LLM call, just pattern + history shape.
- * The model can still override its own behavior, but having a
- * well-grounded stage in the prompt + matching tool gating prevents
- * "search_maids on Hi" failure modes.
+ *
+ * Intent-aware: a sponsor needs to be qualified differently than a
+ * job-seeker, and the threshold for "we know enough to recommend" is
+ * different. Most importantly, we don't promote to RECOMMENDATION
+ * (and unlock tools) until we've actually gathered enough criteria,
+ * so the model can't search/list with empty filters.
  */
-function detectStage(history: HistoryRow[]): Stage {
+function detectStage(history: HistoryRow[], intent: Intent): Stage {
   if (history.length === 0) return 'GREETING';
 
   const last = history[history.length - 1];
   const lastText = (last?.content_text ?? '').trim();
   const lastTextLower = lastText.toLowerCase();
 
-  // Outbound count = how many times the AGENT side has spoken.
   const outboundCount = history.filter((m) => m.sender_type === 'agent').length;
   const customerTexts = history
     .filter((m) => m.sender_type === 'customer')
     .map((m) => (m.content_text ?? '').trim())
     .filter(Boolean);
 
-  // Time since last agent reply — if it's been 24h+, treat as fresh.
+  // Fresh conversation if it's been 24h+ since last agent reply.
   const lastAgent = [...history].reverse().find((m) => m.sender_type === 'agent');
   if (lastAgent) {
     const gap = Date.now() - new Date(lastAgent.created_at).getTime();
@@ -349,39 +401,48 @@ function detectStage(history: HistoryRow[]): Stage {
     return 'GREETING';
   }
 
-  // CLOSE indicators (customer ending the chat)
+  // CLOSE
   if (/^(thanks|thank you|ok|okay|bye|goodbye|cheers|👍|🙏|شكر|متشكر|መልካም)\b/i.test(lastTextLower)) {
     return 'CLOSE';
   }
 
-  // BOOKING / RECOMMENDATION cues — customer expressing concrete interest
-  if (/\b(book|interview|schedule|when can|how much|price|fee|cost|details|profile|photo|hire|salary|contract)\b/i.test(lastTextLower)) {
-    return outboundCount === 0 ? 'DISCOVERY' : 'BOOKING';
-  }
-  if (/\b(maid|housekeep|nanny|cook|elderly|childcare|cleaner|domestic|helper)\b/i.test(lastTextLower)) {
-    // They've named the product → ready for criteria/recommendation
-    return outboundCount === 0 ? 'DISCOVERY' : 'RECOMMENDATION';
-  }
-
-  // Greeting indicators
+  // GREETING (only if we haven't already greeted)
   const greetingPattern = /^(hi|hello|hey|salam|سلام|hola|hii|good (morning|afternoon|evening)|asalam|hi there|👋)/i;
   if (outboundCount === 0 && (greetingPattern.test(lastTextLower) || lastText.length <= 12)) {
     return 'GREETING';
   }
-
-  // We've greeted — figure out where we are by counting exchanges.
   if (outboundCount === 0) return 'GREETING';
-  if (outboundCount === 1) return 'DISCOVERY';
 
-  // Mid-conversation, no booking/recommendation cues → still qualifying.
-  // Look at agent's last reply: did it end with a question?
-  const lastAgentText = (lastAgent?.content_text ?? '').trim();
-  if (lastAgentText.endsWith('?')) return 'QUALIFICATION';
+  // BOOKING — explicit transactional cues (only meaningful AFTER we've
+  // gathered some criteria, hence the customerTexts.length guard)
+  if (
+    customerTexts.length >= 2 &&
+    /\b(book|interview|schedule|how much|price|fee|cost|details|profile|photo)\b/i.test(lastTextLower)
+  ) {
+    return 'BOOKING';
+  }
 
-  // After several turns with no booking signal, default to RECOMMENDATION
-  // (let the model decide if it has enough info to search).
-  if (customerTexts.length >= 3) return 'RECOMMENDATION';
+  // Intent-aware: how much do we need before RECOMMENDATION?
+  // Heuristic: enough info ≈ 2+ customer turns AND specific criteria
+  // mentioned. Otherwise stay in QUALIFICATION so tools remain gated.
+  const hasSponsorCriteria = /\b(dubai|abu\s*dhabi|sharjah|ajman|fujairah|ras\s*al\s*khaimah|umm\s*al\s*quwain|live[\s-]*in|live[\s-]*out|cook|cleaning|childcare|elderly|nanny|babys|housekeep|housekeeper)\b/i.test(
+    customerTexts.join(' '),
+  );
+  const hasJobSeekerCriteria = /\b(ethiopia|addis|kenya|uganda|dubai|uae|saudi|abu\s*dhabi|kuwait|qatar|bahrain|oman|years?\s*(of\s*)?experience|childcare|cook|cleaning|elderly)\b/i.test(
+    customerTexts.join(' '),
+  );
 
+  if (intent === 'sponsor' && customerTexts.length >= 2 && hasSponsorCriteria) {
+    return 'RECOMMENDATION';
+  }
+  if (intent === 'job_seeker' && customerTexts.length >= 2 && hasJobSeekerCriteria) {
+    return 'RECOMMENDATION';
+  }
+
+  // Already greeted; intent unknown or criteria not yet gathered.
+  // The DISCOVERY stage is for INTENT discovery; once intent is known,
+  // we move to QUALIFICATION (where tools are still gated).
+  if (intent === 'unknown') return 'DISCOVERY';
   return 'QUALIFICATION';
 }
 
@@ -443,13 +504,17 @@ function detectLanguage(text: string): Lang {
 function defaultPersona(businessName: string | null): string {
   const name = businessName?.trim() || 'this business';
   return `You are the WhatsApp customer-service agent for ${name}.
-Speak warmly, in 1-3 short sentences per reply, matching the customer's language.
-Acknowledge before you offer or sell. Never invent prices, candidates, or
-availability — call a tool first.`;
+Customers can be EITHER sponsors looking to hire a maid OR maids/job-seekers
+looking for work — never assume. Read the INTENT GUIDANCE below before
+responding.
+Speak warmly, in 1-3 short sentences per reply, matching the customer's
+language. Acknowledge before you offer or sell. Never invent prices,
+candidates, jobs, or availability — call a tool first when one is enabled.`;
 }
 
 function buildRuntimeBlock(
   stage: Stage,
+  intent: Intent,
   language: Lang,
   ctx: CustomerContext,
   allTools: ToolHandler[],
@@ -457,6 +522,7 @@ function buildRuntimeBlock(
 ): string {
   const toolList = allTools.map((t) => `${t.name} — ${t.description.split('.')[0]}.`).join('\n  • ');
   const stageGuide = STAGE_GUIDANCE[stage];
+  const intentGuide = INTENT_GUIDANCE[intent];
   const customerLine = ctx.name
     ? `Customer name: ${ctx.name}${ctx.isReturning ? ' (returning customer — DO NOT re-greet, continue naturally)' : ''}`
     : (ctx.isReturning ? 'Returning customer (DO NOT re-greet, continue from previous context).' : 'New customer — first contact.');
@@ -465,9 +531,13 @@ function buildRuntimeBlock(
     : `Tools are DISABLED for this turn (stage ${stage}). Reply in plain text only — do not attempt to call tools.`;
   return `═══ RUNTIME CONTEXT ═══
 STAGE: ${stage}
+INTENT: ${intent}
 LANGUAGE: ${language} (reply in this language)
 ${customerLine}
 Customer turns so far in this conversation: ${ctx.customerTurns}
+
+INTENT GUIDANCE (critical — read first):
+${intentGuide}
 
 STAGE GUIDANCE:
 ${stageGuide}
@@ -478,17 +548,55 @@ ${toolsLine}
 
 const STAGE_GUIDANCE: Record<Stage, string> = {
   GREETING:
-    'This is a fresh conversation. Send a warm welcome that names the business. Do NOT ask questions yet, do NOT call tools. One friendly sentence is plenty.',
+    'This is a fresh conversation. Send a warm welcome that names the business. Do NOT assume the customer wants to hire OR is looking for work — you do not know yet. Do NOT ask questions yet, do NOT call tools. One friendly sentence is plenty.',
   DISCOVERY:
-    'You have greeted the customer. Now figure out WHO they are and WHAT they want with ONE clarifying question. Possible intents: (a) sponsor seeking a maid, (b) maid seeking a job, (c) existing client. Do NOT call tools yet.',
+    'You have greeted the customer. Now figure out WHAT they want. Read the INTENT GUIDANCE above and ACT ON IT — if intent=sponsor, ask sponsor questions. If intent=job_seeker, ask THEM about their experience and where they want to work. If intent=unknown, ask ONE clarifying question: "Are you looking to hire a maid, or are you looking for work yourself?" Do NOT call tools.',
   QUALIFICATION:
-    'You know they want to hire a maid. Gather the basics with ONE question per turn (skip what you already know): emirate → live-in or live-out → main duties → start date → languages/experience. Do NOT ask budget unless they bring it up. Do NOT call tools yet — wait until you have at least the emirate AND one of {duties, live-in/out}.',
+    'You know the customer intent (see INTENT GUIDANCE above). Gather the relevant basics with ONE question per turn, skipping what you already know from history. Do NOT call tools until you have enough info per the intent guidance.',
   RECOMMENDATION:
-    'You have enough info to recommend. Call search_maids with the criteria you have. Present 2-3 candidates max: first name, age, country, key skill. Offer the next step.',
+    'You have enough info to make a recommendation. Use the right tool for the intent (search_maids for sponsors, list_jobs for job seekers). Present 2-3 results max. Offer the next step.',
   BOOKING:
-    'Customer is interested in a candidate or wants pricing. Use get_maid_profile for details and get_pricing for fees. Offer to arrange an interview. Be specific and concrete.',
+    'Customer is engaging — interested in a candidate, asking pricing, or ready to apply. Use get_maid_profile / get_pricing for sponsors; for job seekers, take down their details and confirm next steps. Be specific and concrete.',
   CLOSE:
     'Customer is wrapping up. Acknowledge briefly and warmly. Leave the door open for future contact. Do NOT call tools.',
+};
+
+const INTENT_GUIDANCE: Record<Intent, string> = {
+  sponsor: `Customer is a SPONSOR seeking to HIRE a maid (family, employer, or representative).
+Qualification questions to gather (one per turn, skip if already answered):
+  1. Which emirate are you in?
+  2. Live-in or live-out?
+  3. Main duties (childcare / cooking / elderly care / general)?
+  4. When do you need her to start?
+  5. Any language or experience preference?
+Recommendation: when you have the emirate AND at least one of {duties, live-in/out},
+call search_maids with the criteria. Present 2-3 candidates by first name + age +
+country + key skill. NEVER share full names, IDs, or contact info until booking.
+For pricing: call get_pricing(country: "UAE").`,
+
+  job_seeker: `Customer IS a MAID looking for WORK (or someone applying on her behalf).
+Do NOT ask her to hire anyone. Do NOT ask which emirate she wants TO HIRE FROM.
+Qualification questions to gather (one per turn, skip if already answered):
+  1. Where are you currently located (country)?
+  2. How many years of experience as a domestic worker?
+  3. What skills — childcare, cooking, elderly care, cleaning?
+  4. Which destination country / emirate do you want to work in?
+  5. When are you available to start?
+  6. What languages do you speak?
+Recommendation: when you have country + experience + destination, call list_jobs
+with location (the destination) to surface matching openings. Present 1-3 open
+roles with title, location, salary range.
+For application: do NOT promise placement. Take down their details and tell them
+our recruitment team will reach out. Use escalate_to_human(reason: "job application")
+to flag for human follow-up.`,
+
+  unknown: `You do NOT yet know if this customer wants to hire a maid (sponsor) or
+is looking for work themselves (job seeker). Your job in DISCOVERY is to find out
+with ONE clarifying question. Suggested phrasing:
+  English: "Are you looking to hire a maid, or are you looking for work yourself?"
+  Arabic:  "هل تبحث عن خادمة للتوظيف، أم تبحث عن عمل لنفسك؟"
+Do NOT assume one side. Do NOT ask emirate/duties yet — that only makes sense
+once we know they're a sponsor.`,
 };
 
 const OPERATING_DIRECTIVE = `═══ OPERATING RULES ═══
