@@ -35,6 +35,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { MessageBubble } from "./message-bubble";
 import { MessageActions } from "./message-actions";
 import { MessageComposer } from "./message-composer";
+import { AICopilotPanel } from "./ai-copilot-panel";
 import { TemplatePicker } from "./template-picker";
 import { buildReplyPreview } from "./reply-quote";
 import { toast } from "sonner";
@@ -919,6 +920,14 @@ export function MessageThread({
           </div>
         )}
       </div>
+
+      {/* AI Copilot — appears between the message scroll area and the
+          composer when the latest message is from the customer. */}
+      <AICopilotPanel
+        conversationId={conversation.id}
+        latestMessage={messages.length > 0 ? messages[messages.length - 1] : null}
+        onSelect={(text) => handleSend(text)}
+      />
 
       {/* Composer */}
       <MessageComposer
