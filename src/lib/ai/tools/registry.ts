@@ -21,6 +21,16 @@ export interface ToolContext {
   contactPhone: string;
   hasuraUrl: string | null;
   hasuraAdminSecret: string | null;
+  /**
+   * Credentials needed by render-side tools (e.g. send_maid_cards) so
+   * they can post directly to Meta API without re-fetching the user's
+   * whatsapp_config row. Populated by agent.ts when it builds the
+   * context.
+   */
+  whatsapp: {
+    phoneNumberId: string;
+    accessToken: string;
+  } | null;
 }
 
 export interface ToolHandler {
