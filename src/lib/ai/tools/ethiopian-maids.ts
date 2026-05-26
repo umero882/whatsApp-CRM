@@ -630,10 +630,320 @@ export const sendMaidCards: ToolHandler = {
   },
 };
 
+// ----------------------------------------------------------------
+// book_interview — schedule a video interview between the sponsor
+// (the WhatsApp customer) and a specific maid. Inserts into bookings,
+// generates a Jitsi video room URL, sends the link to the sponsor
+// via WhatsApp. Maid-side notification is V2 (Meta requires an
+// approved template for first-touch outside the 24h window).
+// ----------------------------------------------------------------
+const RESOLVE_MAID_GQL = /* GraphQL */ `
+  query ResolveMaid($where: maid_profiles_public_bool_exp!) {
+    maid_profiles_public(where: $where, limit: 5) {
+      id
+      first_name
+      full_name
+      nationality
+      country
+      availability_status
+    }
+  }
+`;
+
+const FETCH_MAID_PHONE_GQL = /* GraphQL */ `
+  query MaidPhone($id: String!) {
+    maid_profiles_by_pk(id: $id) {
+      alternative_phone
+      phone_number
+      phone_country_code
+      phone_verified
+    }
+  }
+`;
+
+const INSERT_BOOKING_GQL = /* GraphQL */ `
+  mutation BookInterview($obj: bookings_insert_input!) {
+    insert_bookings_one(object: $obj) {
+      id
+      interview_date
+      status
+    }
+  }
+`;
+
+interface MaidLookupRow {
+  id: string;
+  first_name: string | null;
+  full_name: string | null;
+  nationality: string | null;
+  country: string | null;
+  availability_status: string | null;
+}
+
+/**
+ * Resolve a maid by id OR by name. Returns at most 5 matches. The
+ * caller decides whether to disambiguate or fail.
+ */
+async function resolveMaid(
+  ctx: ToolContext,
+  args: { maid_id?: string; maid_name?: string },
+): Promise<MaidLookupRow[]> {
+  const hasura = ensureHasura(ctx);
+  if (args.maid_id) {
+    const data = await hasura.query<{ maid_profiles_public: MaidLookupRow[] }>(
+      RESOLVE_MAID_GQL,
+      { where: { id: { _eq: args.maid_id } } },
+    );
+    return data.maid_profiles_public ?? [];
+  }
+  if (args.maid_name) {
+    const n = args.maid_name.trim();
+    if (!n) return [];
+    const data = await hasura.query<{ maid_profiles_public: MaidLookupRow[] }>(
+      RESOLVE_MAID_GQL,
+      {
+        where: {
+          _or: [
+            { first_name: { _ilike: `${n}%` } },
+            { full_name: { _ilike: `%${n}%` } },
+          ],
+          availability_status: { _eq: 'available' },
+        },
+      },
+    );
+    return data.maid_profiles_public ?? [];
+  }
+  return [];
+}
+
+/**
+ * Parse a human-friendly datetime string into an ISO timestamp.
+ * Accepts: ISO 8601 ("2026-05-27T14:00:00Z"), or "tomorrow 2pm",
+ * "today 4pm", "monday 10am", "in 2 hours". Returns null if unparseable.
+ *
+ * Kept deliberately simple — for production a real lib like chrono-node
+ * would be more robust, but the LLM is encouraged to produce ISO format.
+ */
+function parseDatetime(input: string): string | null {
+  const s = input.trim();
+  if (!s) return null;
+  // Direct ISO try first.
+  const direct = new Date(s);
+  if (!Number.isNaN(direct.getTime()) && /^\d{4}-/.test(s)) {
+    return direct.toISOString();
+  }
+  const lower = s.toLowerCase();
+  const now = new Date();
+
+  // "in N hours/minutes"
+  const inMatch = lower.match(/^in\s+(\d+)\s*(hour|hr|h|min|minute|m)s?$/);
+  if (inMatch) {
+    const n = Number(inMatch[1]);
+    const unit = inMatch[2];
+    const mins = unit.startsWith('h') ? n * 60 : n;
+    return new Date(now.getTime() + mins * 60_000).toISOString();
+  }
+
+  // "today/tomorrow [optional time]"
+  const dayMatch = lower.match(/^(today|tomorrow)(?:\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?$/);
+  if (dayMatch) {
+    const day = dayMatch[1];
+    const hh = dayMatch[2] ? Number(dayMatch[2]) : 14; // default 2pm
+    const mm = dayMatch[3] ? Number(dayMatch[3]) : 0;
+    const ampm = dayMatch[4];
+    let hour = hh;
+    if (ampm === 'pm' && hh < 12) hour += 12;
+    if (ampm === 'am' && hh === 12) hour = 0;
+    const d = new Date(now);
+    if (day === 'tomorrow') d.setDate(d.getDate() + 1);
+    d.setHours(hour, mm, 0, 0);
+    return d.toISOString();
+  }
+
+  return null;
+}
+
+/**
+ * Generate a meeting URL for the interview. Uses Jitsi public rooms
+ * (free, no API key required). A more robust setup would use Daily.co
+ * or Whereby with rooms scoped to the booking id.
+ */
+function makeMeetingUrl(bookingId: string): string {
+  const short = bookingId.replace(/-/g, '').slice(0, 12);
+  return `https://meet.jit.si/EthiopianMaids-${short}`;
+}
+
+function formatScheduledTime(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const isTomorrow = d.toDateString() === tomorrow.toDateString();
+  const timeStr = d.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: 'Asia/Dubai',
+  });
+  if (sameDay) return `today at ${timeStr}`;
+  if (isTomorrow) return `tomorrow at ${timeStr}`;
+  return `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Dubai' })} at ${timeStr}`;
+}
+
+export const bookInterview: ToolHandler = {
+  name: 'book_interview',
+  description:
+    'Schedule a video interview between the sponsor (the WhatsApp customer) and a specific maid. ' +
+    'Creates a booking in the database and generates a video meeting link. ' +
+    'Call this when the customer says "book interview for [name]", "I want to interview X", etc. ' +
+    'Pass maid_name (the first name from a card you already showed) — server resolves it. ' +
+    'If the customer hasn\'t given a specific date/time yet, DO NOT call this tool — ask them first ' +
+    '("When works for you? e.g. tomorrow 2pm").',
+  parameters: {
+    type: 'object',
+    properties: {
+      maid_name: {
+        type: 'string',
+        description: 'First name (or full name) of the maid to interview, e.g. "Grace". Server resolves to the canonical maid record.',
+      },
+      maid_id: {
+        type: 'string',
+        description: 'UUID of the maid (if known from a previous tool call). Preferred over maid_name if available.',
+      },
+      preferred_datetime: {
+        type: 'string',
+        description:
+          'When the interview should happen. Accepts ISO 8601 ("2026-05-27T14:00:00Z"), or natural phrases the customer used ("tomorrow 2pm", "today 4pm", "in 2 hours"). Required — never guess a time without customer confirmation.',
+      },
+      duration_minutes: {
+        type: 'number',
+        description: 'Length of the interview in minutes. Default 30.',
+      },
+      notes: {
+        type: 'string',
+        description: 'Optional context for the ops team (e.g. "Sponsor wants live-in, 2 kids ages 4 and 6").',
+      },
+    },
+    required: ['preferred_datetime'],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    if (!args.maid_id && !args.maid_name) {
+      return { error: 'Either maid_id or maid_name is required.' };
+    }
+    if (!args.preferred_datetime) {
+      return { error: 'preferred_datetime is required. Ask the customer first if not given.' };
+    }
+
+    // 1. Resolve maid
+    let matches: MaidLookupRow[];
+    try {
+      matches = await resolveMaid(ctx, {
+        maid_id: args.maid_id as string | undefined,
+        maid_name: args.maid_name as string | undefined,
+      });
+    } catch (e) {
+      if (e instanceof HasuraError) return { error: `Hasura lookup failed: ${e.message}` };
+      throw e;
+    }
+    if (matches.length === 0) {
+      return {
+        error: `Could not find an available maid matching "${args.maid_name ?? args.maid_id}". Re-run search_maids or ask the customer to clarify which candidate (first + last name).`,
+      };
+    }
+    if (matches.length > 1) {
+      const list = matches
+        .map((m) => `${m.first_name || m.full_name} (${m.nationality || m.country || '?'})`)
+        .join(', ');
+      return {
+        error: `Multiple maids match "${args.maid_name}": ${list}. Ask the customer which one (use first + last initial).`,
+      };
+    }
+    const maid = matches[0];
+
+    // 2. Parse datetime
+    const isoTime = parseDatetime(String(args.preferred_datetime));
+    if (!isoTime) {
+      return {
+        error: `Could not parse preferred_datetime "${args.preferred_datetime}". Use ISO 8601 (2026-05-27T14:00:00Z) or simple phrases like "tomorrow 2pm" / "today 4pm" / "in 2 hours".`,
+      };
+    }
+    const scheduledAt = new Date(isoTime);
+    if (scheduledAt.getTime() < Date.now() - 5 * 60_000) {
+      return {
+        error: `Time ${isoTime} is in the past. Ask the customer for a future time.`,
+      };
+    }
+    const durationMinutes = Math.min(Math.max(Number(args.duration_minutes) || 30, 15), 120);
+
+    // 3. Insert booking
+    const hasura = ensureHasura(ctx);
+    const sponsorNote = `Sponsor WhatsApp: ${ctx.contactPhone}${args.notes ? ` | Notes: ${args.notes}` : ''}`;
+    let booking: { id: string; interview_date: string; status: string };
+    // start_date is NOT NULL on bookings; we use the same date as the
+    // interview (it's an interview booking, not yet a placement, so
+    // start_date is provisional until they actually hire).
+    const dateOnly = isoTime.slice(0, 10);
+    try {
+      const data = await hasura.query<{
+        insert_bookings_one: { id: string; interview_date: string; status: string };
+      }>(INSERT_BOOKING_GQL, {
+        obj: {
+          maid_id: maid.id,
+          booking_type: 'interview',
+          interview_type: 'video',
+          interview_date: isoTime,
+          start_date: dateOnly,
+          status: 'pending_interview',
+          duration_months: 0,
+          notes: sponsorNote,
+        },
+      });
+      booking = data.insert_bookings_one;
+    } catch (e) {
+      if (e instanceof HasuraError) return { error: `Failed to create booking: ${e.message}` };
+      throw e;
+    }
+
+    // 4. Meeting URL
+    const meetingUrl = makeMeetingUrl(booking.id);
+    const timePretty = formatScheduledTime(isoTime);
+
+    // 5. Try to fetch the maid's phone for ops follow-up (informational
+    // only — actually messaging her requires an approved Meta template
+    // and is deferred to V2).
+    let maidPhone: string | null = null;
+    try {
+      const data = await hasura.query<{
+        maid_profiles_by_pk: { alternative_phone: string | null; phone_number: string | null; phone_verified: boolean | null };
+      }>(FETCH_MAID_PHONE_GQL, { id: maid.id });
+      maidPhone = data.maid_profiles_by_pk?.alternative_phone || data.maid_profiles_by_pk?.phone_number || null;
+    } catch {
+      /* non-fatal */
+    }
+
+    return {
+      ok: true,
+      booking_id: booking.id,
+      maid_name: maid.first_name || maid.full_name,
+      maid_id: maid.id,
+      scheduled_at: isoTime,
+      scheduled_at_friendly: timePretty,
+      duration_minutes: durationMinutes,
+      meeting_url: meetingUrl,
+      maid_contact_pending: !!maidPhone,
+      note:
+        `Interview booked. Your FINAL text reply to the customer MUST include: (a) confirmation with maid name + scheduled time "${timePretty}", (b) the video link ${meetingUrl}, (c) note "We'll confirm with ${maid.first_name || 'the candidate'} and send a reminder before the call." Keep it warm and 2-3 short lines. Do NOT send the link as a separate message — include it in the same reply.`,
+    };
+  },
+};
+
 export const ETHIOPIAN_MAIDS_TOOLS: ToolHandler[] = [
   searchMaids,
   getMaidProfile,
   sendMaidCards,
+  bookInterview,
   listJobs,
   getPricing,
   escalateToHuman,
