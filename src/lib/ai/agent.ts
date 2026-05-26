@@ -1,25 +1,20 @@
 /**
  * Autonomous AI reply agent.
  *
- * Lifecycle, per inbound customer message:
- *   1. Webhook persists the inbound message (sender_type='customer').
- *   2. Webhook calls `runAgent(conversationId)` fire-and-forget.
- *   3. runAgent loads ai_agent_config + ai_provider_config + recent
- *      conversation history.
- *   4. runAgent enters a loop (max N turns from config):
- *        - Call provider.chatWithTools with the registered tool list.
- *        - If LLM returns tool_calls: execute each, append result, loop.
- *        - If LLM returns text: that's the customer-facing reply. Send
- *          it via Meta API, insert into messages with agent_kind='ai',
- *          update conversation.last_message_*, exit.
- *   5. If we hit max_turns without a text answer, fall back to a
- *      polite "let me check with a human" reply and tag the convo.
+ * Stage-aware architecture (see DESIGN.md / roadmap):
  *
- * Guards:
- *   - Skip if ai_agent_config.is_enabled = false.
- *   - Skip if conversations.ai_paused_until > now.
- *   - Skip if the most recent message wasn't from the customer (covers
- *     races where a human already replied between webhook and agent).
+ *   GREETING       — first contact or 24h+ silence. No tools. Just welcome.
+ *   DISCOVERY      — greeted, intent unclear. No tools. One clarifying Q.
+ *   QUALIFICATION  — intent clear (sponsor wants maid), gathering criteria.
+ *                    No tools. ONE question per turn.
+ *   RECOMMENDATION — enough criteria to search. Tools enabled.
+ *   BOOKING        — customer engaging with a candidate. Tools enabled.
+ *   CLOSE          — conversation winding down. No tools.
+ *
+ * The server computes the stage from conversation history and injects
+ * it into the system prompt. When the stage forbids tools, the server
+ * sends `tools: []` to the provider so the model PHYSICALLY can't
+ * call them — much stronger than "don't call tools" in the prompt.
  *
  * This module uses the SERVICE ROLE Supabase client throughout —
  * the agent runs outside any user session.
@@ -41,8 +36,23 @@ import {
 import type { ToolHandler, ToolContext } from './tools/registry';
 import { findTool, toolsToSpecs } from './tools/registry';
 
-const FALLBACK_REPLY =
-  "Thanks for reaching out — one of our agents will be with you shortly.";
+/**
+ * Stage names match the documented playbook in the Habiba preset
+ * (see src/components/settings/ai-agent-config.tsx). Keep in sync.
+ */
+type Stage =
+  | 'GREETING'
+  | 'DISCOVERY'
+  | 'QUALIFICATION'
+  | 'RECOMMENDATION'
+  | 'BOOKING'
+  | 'CLOSE';
+
+/** Stages where the model is allowed to call tools. */
+const TOOL_STAGES: ReadonlySet<Stage> = new Set(['RECOMMENDATION', 'BOOKING']);
+
+/** 24h gap = treat as a fresh conversation. */
+const RETURN_GAP_MS = 24 * 60 * 60 * 1000;
 
 interface AgentConfigRow {
   user_id: string;
@@ -67,18 +77,28 @@ interface ConversationRow {
   id: string;
   user_id: string;
   ai_paused_until: string | null;
-  contact: { id: string; name: string | null; phone: string }[] | { id: string; name: string | null; phone: string } | null;
+  contact:
+    | { id: string; name: string | null; phone: string }[]
+    | { id: string; name: string | null; phone: string }
+    | null;
+}
+
+interface HistoryRow {
+  sender_type: 'customer' | 'agent';
+  content_type: string;
+  content_text: string | null;
+  agent_kind?: 'human' | 'ai' | null;
+  created_at: string;
 }
 
 export type AgentRunResult =
   | { kind: 'skipped'; reason: string }
-  | { kind: 'replied'; text: string; turns: number; toolsUsed: string[] }
+  | { kind: 'replied'; text: string; stage: Stage; turns: number; toolsUsed: string[] }
   | { kind: 'escalated'; reason: string }
   | { kind: 'failed'; reason: string };
 
 /**
- * Main entry point. Safe to call fire-and-forget — always resolves,
- * never rejects. Returns a structured result for observability.
+ * Main entry. Fire-and-forget safe — always resolves.
  */
 export async function runAgent(conversationId: string): Promise<AgentRunResult> {
   try {
@@ -93,9 +113,7 @@ export async function runAgent(conversationId: string): Promise<AgentRunResult> 
 async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   const sb = supabaseAdmin();
 
-  // Load conversation (with contact). The `contact` join may return
-  // either a single object or an array depending on the inferred
-  // relationship cardinality in supabase-js; we normalize below.
+  // ─── Load conversation + contact ────────────────────────────────────
   const { data: convRaw, error: convErr } = await sb
     .from('conversations')
     .select('id, user_id, ai_paused_until, contact:contacts(id, name, phone)')
@@ -103,17 +121,15 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     .maybeSingle();
   if (convErr) throw new Error(`load conversation: ${convErr.message}`);
   if (!convRaw) return { kind: 'skipped', reason: 'conversation_not_found' };
-
   const conv = convRaw as ConversationRow;
   const contact = Array.isArray(conv.contact) ? conv.contact[0] : conv.contact;
   if (!contact?.phone) return { kind: 'skipped', reason: 'no_contact_phone' };
 
-  // Pause window check.
   if (conv.ai_paused_until && new Date(conv.ai_paused_until).getTime() > Date.now()) {
     return { kind: 'skipped', reason: 'ai_paused' };
   }
 
-  // Agent config.
+  // ─── Load agent + provider + WhatsApp config ────────────────────────
   const { data: agentCfg, error: agentErr } = await sb
     .from('ai_agent_config')
     .select('user_id, is_enabled, business_name, system_prompt, max_turns, human_pause_minutes, hasura_url, encrypted_hasura_admin_secret, enabled_tools')
@@ -124,7 +140,6 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   const agent = agentCfg as AgentConfigRow;
   if (!agent.is_enabled) return { kind: 'skipped', reason: 'agent_disabled' };
 
-  // Provider config (LLM credentials reused from ai_provider_config).
   const { data: provCfg, error: provErr } = await sb
     .from('ai_provider_config')
     .select('provider, model, base_url, encrypted_api_key')
@@ -134,7 +149,6 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   if (!provCfg) return { kind: 'skipped', reason: 'no_provider_config' };
   const provRow = provCfg as ProviderConfigRow;
 
-  // WhatsApp config (need access token + phone_number_id to send).
   const { data: waCfg, error: waErr } = await sb
     .from('whatsapp_config')
     .select('phone_number_id, access_token')
@@ -143,20 +157,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   if (waErr) throw new Error(`load wa config: ${waErr.message}`);
   if (!waCfg) return { kind: 'skipped', reason: 'no_whatsapp_config' };
 
-  // Last message must still be from the customer — guards against a
-  // race where a human jumped in between webhook persist and our run.
-  const { data: lastMsgs, error: lastErr } = await sb
-    .from('messages')
-    .select('sender_type, created_at')
-    .eq('conversation_id', conv.id)
-    .order('created_at', { ascending: false })
-    .limit(1);
-  if (lastErr) throw new Error(`load last message: ${lastErr.message}`);
-  if (!lastMsgs?.length || lastMsgs[0].sender_type !== 'customer') {
-    return { kind: 'skipped', reason: 'no_pending_customer_turn' };
-  }
-
-  // History for the LLM (oldest first, last 20 messages).
+  // ─── Load history (last 20) ─────────────────────────────────────────
   const { data: histRaw, error: histErr } = await sb
     .from('messages')
     .select('sender_type, content_type, content_text, agent_kind, created_at')
@@ -164,15 +165,28 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     .order('created_at', { ascending: false })
     .limit(20);
   if (histErr) throw new Error(`load history: ${histErr.message}`);
-  const history = [...(histRaw ?? [])].reverse();
+  const history = [...(histRaw ?? [])].reverse() as HistoryRow[];
 
-  // Build the agent runtime context.
+  // Race guard: most recent message must still be from the customer.
+  // (Possible the customer-side msg arrived, our webhook fired runAgent,
+  // and a human jumped in via the inbox before we got here.)
+  const last = history[history.length - 1];
+  if (!last || last.sender_type !== 'customer') {
+    return { kind: 'skipped', reason: 'no_pending_customer_turn' };
+  }
+
+  // ─── Stage + context ────────────────────────────────────────────────
+  const stage = detectStage(history);
+  const customerContext = buildCustomerContext(contact, history);
+  const language = detectLanguage(last.content_text ?? '');
+  const allowTools = TOOL_STAGES.has(stage);
+
+  // ─── Provider + tools ───────────────────────────────────────────────
   const accessToken = decrypt(waCfg.access_token);
   const apiKey = provRow.encrypted_api_key ? decrypt(provRow.encrypted_api_key) : undefined;
   const hasuraAdminSecret = agent.encrypted_hasura_admin_secret
     ? decrypt(agent.encrypted_hasura_admin_secret)
     : null;
-
   const provider = makeProvider(provRow.provider, {
     model: provRow.model,
     apiKey,
@@ -189,15 +203,21 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   };
 
   const allowedTools = filterTools(ETHIOPIAN_MAIDS_TOOLS, agent.enabled_tools);
-  const toolSpecs = toolsToSpecs(allowedTools);
+  // STRONG GATE: when stage forbids tools, the model literally can't
+  // call them. Stronger than relying on the prompt to say "don't".
+  const stageTools: ToolHandler[] = allowTools ? allowedTools : [];
+  const toolSpecs = toolsToSpecs(stageTools);
 
-  // Compose the system prompt: user persona + format/tool directive
-  // (server-controlled — can't be overridden by user prompt edits).
+  // ─── Compose system prompt ──────────────────────────────────────────
   const persona = (agent.system_prompt ?? '').trim() || defaultPersona(agent.business_name);
-  const directive = buildAgentDirective(allowedTools);
-  const systemPrompt = `${persona}\n\n${directive}`;
+  const runtimeBlock = buildRuntimeBlock(stage, language, customerContext, allowedTools, allowTools);
+  const directive = OPERATING_DIRECTIVE;
+  const systemPrompt = [persona, runtimeBlock, directive].join('\n\n');
 
-  // Build initial messages: system + history transcript + final user nudge.
+  console.log('[ai-agent] start convo=%s stage=%s lang=%s tools=%d ctx={returning:%s,name:%s}',
+    conv.id, stage, language, stageTools.length, customerContext.isReturning, customerContext.name ?? '?');
+
+  // ─── Messages ───────────────────────────────────────────────────────
   const messages: AgentMessage[] = [{ role: 'system', content: systemPrompt }];
   for (const m of history) {
     if (m.sender_type === 'customer') {
@@ -207,7 +227,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     }
   }
 
-  // Run the loop.
+  // ─── Loop ───────────────────────────────────────────────────────────
   const toolsUsed: string[] = [];
   for (let turn = 0; turn < agent.max_turns; turn++) {
     let result;
@@ -221,23 +241,37 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     } catch (e) {
       if (e instanceof ProviderError) {
         console.error('[ai-agent] provider failed:', e.message);
-        await postAndPersist(sb, waCfg, accessToken, contact, conv.id, FALLBACK_REPLY);
+        await postAndPersist(sb, waCfg, accessToken, contact, conv.id,
+          stageHoldingReply(stage, language));
         return { kind: 'failed', reason: `provider: ${e.message}` };
       }
       throw e;
     }
 
     if (result.kind === 'text') {
-      console.log('[ai-agent] turn', turn + 1, 'text reply:', result.text.slice(0, 120));
-      await postAndPersist(sb, waCfg, accessToken, contact, conv.id, result.text);
+      const text = result.text.trim();
+      if (!text) {
+        // Empty content with no tool calls — extremely rare but seen
+        // when models go offline mid-response. Retry once with a
+        // forceful instruction; if that also fails, send the stage-
+        // appropriate holding line.
+        console.warn('[ai-agent] empty text, retrying once');
+        messages.push({ role: 'assistant', content: '' });
+        messages.push({
+          role: 'user',
+          content: 'Reply now in plain text. One short sentence. Do not call a tool.',
+        });
+        continue;
+      }
+      console.log('[ai-agent] turn', turn + 1, 'reply:', text.slice(0, 120));
+      await postAndPersist(sb, waCfg, accessToken, contact, conv.id, text);
       const escalated = toolsUsed.includes('escalate_to_human');
       return escalated
         ? { kind: 'escalated', reason: 'escalate_to_human tool used' }
-        : { kind: 'replied', text: result.text, turns: turn + 1, toolsUsed };
+        : { kind: 'replied', text, stage, turns: turn + 1, toolsUsed };
     }
 
-    // Tool calls — execute each, append assistant turn + tool results,
-    // then loop. Run sequentially (V1) for predictability.
+    // tool_calls — only possible in tool-allowed stages
     console.log(
       '[ai-agent] turn', turn + 1, 'tool_calls:',
       result.calls.map((c) => `${c.name}(${Object.keys(c.arguments).join(',')})`).join(' '),
@@ -247,14 +281,15 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
       content: result.rawAssistantText ?? null,
       tool_calls: result.calls,
     });
-
     for (const call of result.calls) {
       toolsUsed.push(call.name);
-      const tool = findTool(allowedTools, call.name);
+      const tool = findTool(stageTools, call.name);
       let resultJson: unknown;
       try {
         if (!tool) {
-          resultJson = { error: `Unknown tool: ${call.name}. Available: ${allowedTools.map((t) => t.name).join(', ')}` };
+          resultJson = {
+            error: `Tool "${call.name}" is not available in stage ${stage}. Reply in plain text instead.`,
+          };
         } else {
           resultJson = await tool.handler(call.arguments, toolCtx);
         }
@@ -263,8 +298,6 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
         console.warn('[ai-agent] tool failed:', call.name, msg);
         resultJson = { error: msg };
       }
-      // Log tool outcome (truncated) so we can see why the LLM keeps trying
-      // when it does. Avoids needing to re-run to diagnose loops.
       const summary = safeJsonString(resultJson).slice(0, 200);
       console.log('[ai-agent]   →', call.name, 'result:', summary);
       messages.push({
@@ -275,20 +308,234 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     }
   }
 
-  // Loop budget exhausted — send fallback and tag for human.
+  // Loop exhausted — stage-aware holding reply
   console.warn('[ai-agent] max_turns reached without final reply');
-  await postAndPersist(sb, waCfg, accessToken, contact, conv.id, FALLBACK_REPLY);
+  await postAndPersist(sb, waCfg, accessToken, contact, conv.id,
+    stageHoldingReply(stage, language));
   return { kind: 'failed', reason: 'max_turns_exceeded' };
 }
 
-// ----------------------------------------------------------------
-// helpers
-// ----------------------------------------------------------------
+// ════════════════════════════════════════════════════════════════════
+// Stage detection
+// ════════════════════════════════════════════════════════════════════
 
-function stringifyHistoryMessage(m: {
-  content_type?: string;
-  content_text?: string | null;
-}): string {
+/**
+ * Conservative classifier — no LLM call, just pattern + history shape.
+ * The model can still override its own behavior, but having a
+ * well-grounded stage in the prompt + matching tool gating prevents
+ * "search_maids on Hi" failure modes.
+ */
+function detectStage(history: HistoryRow[]): Stage {
+  if (history.length === 0) return 'GREETING';
+
+  const last = history[history.length - 1];
+  const lastText = (last?.content_text ?? '').trim();
+  const lastTextLower = lastText.toLowerCase();
+
+  // Outbound count = how many times the AGENT side has spoken.
+  const outboundCount = history.filter((m) => m.sender_type === 'agent').length;
+  const customerTexts = history
+    .filter((m) => m.sender_type === 'customer')
+    .map((m) => (m.content_text ?? '').trim())
+    .filter(Boolean);
+
+  // Time since last agent reply — if it's been 24h+, treat as fresh.
+  const lastAgent = [...history].reverse().find((m) => m.sender_type === 'agent');
+  if (lastAgent) {
+    const gap = Date.now() - new Date(lastAgent.created_at).getTime();
+    if (gap > RETURN_GAP_MS) return 'GREETING';
+  } else {
+    // No agent reply ever — we haven't greeted yet.
+    return 'GREETING';
+  }
+
+  // CLOSE indicators (customer ending the chat)
+  if (/^(thanks|thank you|ok|okay|bye|goodbye|cheers|👍|🙏|شكر|متشكر|መልካም)\b/i.test(lastTextLower)) {
+    return 'CLOSE';
+  }
+
+  // BOOKING / RECOMMENDATION cues — customer expressing concrete interest
+  if (/\b(book|interview|schedule|when can|how much|price|fee|cost|details|profile|photo|hire|salary|contract)\b/i.test(lastTextLower)) {
+    return outboundCount === 0 ? 'DISCOVERY' : 'BOOKING';
+  }
+  if (/\b(maid|housekeep|nanny|cook|elderly|childcare|cleaner|domestic|helper)\b/i.test(lastTextLower)) {
+    // They've named the product → ready for criteria/recommendation
+    return outboundCount === 0 ? 'DISCOVERY' : 'RECOMMENDATION';
+  }
+
+  // Greeting indicators
+  const greetingPattern = /^(hi|hello|hey|salam|سلام|hola|hii|good (morning|afternoon|evening)|asalam|hi there|👋)/i;
+  if (outboundCount === 0 && (greetingPattern.test(lastTextLower) || lastText.length <= 12)) {
+    return 'GREETING';
+  }
+
+  // We've greeted — figure out where we are by counting exchanges.
+  if (outboundCount === 0) return 'GREETING';
+  if (outboundCount === 1) return 'DISCOVERY';
+
+  // Mid-conversation, no booking/recommendation cues → still qualifying.
+  // Look at agent's last reply: did it end with a question?
+  const lastAgentText = (lastAgent?.content_text ?? '').trim();
+  if (lastAgentText.endsWith('?')) return 'QUALIFICATION';
+
+  // After several turns with no booking signal, default to RECOMMENDATION
+  // (let the model decide if it has enough info to search).
+  if (customerTexts.length >= 3) return 'RECOMMENDATION';
+
+  return 'QUALIFICATION';
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Customer context
+// ════════════════════════════════════════════════════════════════════
+
+interface CustomerContext {
+  name: string | null;
+  isReturning: boolean;
+  /** How many turns the customer has had with us, ever (within history window). */
+  customerTurns: number;
+}
+
+function buildCustomerContext(
+  contact: { name: string | null; phone: string },
+  history: HistoryRow[],
+): CustomerContext {
+  const customerTurns = history.filter((m) => m.sender_type === 'customer').length;
+  // "Returning" = there's at least one prior agent reply in the window
+  // AND the last agent reply was more than 1 hour ago (i.e. this is a
+  // new session, not just continuation of an active chat).
+  const agentReplies = history.filter((m) => m.sender_type === 'agent');
+  const lastAgent = agentReplies[agentReplies.length - 1];
+  const oneHour = 60 * 60 * 1000;
+  const isReturning = !!lastAgent
+    && (Date.now() - new Date(lastAgent.created_at).getTime()) > oneHour
+    && agentReplies.length >= 1;
+  return {
+    name: contact.name?.trim() || null,
+    isReturning,
+    customerTurns,
+  };
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Language detection (lightweight, no extra deps)
+// ════════════════════════════════════════════════════════════════════
+
+type Lang = 'English' | 'Arabic' | 'Amharic' | 'Urdu' | 'Hindi';
+
+function detectLanguage(text: string): Lang {
+  if (!text) return 'English';
+  // Amharic uses Ethiopic script (U+1200–U+137F)
+  if (/[ሀ-፿]/.test(text)) return 'Amharic';
+  // Devanagari (Hindi) U+0900–U+097F
+  if (/[ऀ-ॿ]/.test(text)) return 'Hindi';
+  // Urdu uses Arabic script + specific letters (ٹ ڈ ڑ ے ں etc.)
+  if (/[ٹڈڑںھہے]/.test(text)) return 'Urdu';
+  // Plain Arabic
+  if (/[؀-ۿ]/.test(text)) return 'Arabic';
+  return 'English';
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Prompt assembly
+// ════════════════════════════════════════════════════════════════════
+
+function defaultPersona(businessName: string | null): string {
+  const name = businessName?.trim() || 'this business';
+  return `You are the WhatsApp customer-service agent for ${name}.
+Speak warmly, in 1-3 short sentences per reply, matching the customer's language.
+Acknowledge before you offer or sell. Never invent prices, candidates, or
+availability — call a tool first.`;
+}
+
+function buildRuntimeBlock(
+  stage: Stage,
+  language: Lang,
+  ctx: CustomerContext,
+  allTools: ToolHandler[],
+  toolsAllowedThisTurn: boolean,
+): string {
+  const toolList = allTools.map((t) => `${t.name} — ${t.description.split('.')[0]}.`).join('\n  • ');
+  const stageGuide = STAGE_GUIDANCE[stage];
+  const customerLine = ctx.name
+    ? `Customer name: ${ctx.name}${ctx.isReturning ? ' (returning customer — DO NOT re-greet, continue naturally)' : ''}`
+    : (ctx.isReturning ? 'Returning customer (DO NOT re-greet, continue from previous context).' : 'New customer — first contact.');
+  const toolsLine = toolsAllowedThisTurn
+    ? `Tools available NOW (${allTools.length}):\n  • ${toolList}`
+    : `Tools are DISABLED for this turn (stage ${stage}). Reply in plain text only — do not attempt to call tools.`;
+  return `═══ RUNTIME CONTEXT ═══
+STAGE: ${stage}
+LANGUAGE: ${language} (reply in this language)
+${customerLine}
+Customer turns so far in this conversation: ${ctx.customerTurns}
+
+STAGE GUIDANCE:
+${stageGuide}
+
+${toolsLine}
+═══════════════════════`;
+}
+
+const STAGE_GUIDANCE: Record<Stage, string> = {
+  GREETING:
+    'This is a fresh conversation. Send a warm welcome that names the business. Do NOT ask questions yet, do NOT call tools. One friendly sentence is plenty.',
+  DISCOVERY:
+    'You have greeted the customer. Now figure out WHO they are and WHAT they want with ONE clarifying question. Possible intents: (a) sponsor seeking a maid, (b) maid seeking a job, (c) existing client. Do NOT call tools yet.',
+  QUALIFICATION:
+    'You know they want to hire a maid. Gather the basics with ONE question per turn (skip what you already know): emirate → live-in or live-out → main duties → start date → languages/experience. Do NOT ask budget unless they bring it up. Do NOT call tools yet — wait until you have at least the emirate AND one of {duties, live-in/out}.',
+  RECOMMENDATION:
+    'You have enough info to recommend. Call search_maids with the criteria you have. Present 2-3 candidates max: first name, age, country, key skill. Offer the next step.',
+  BOOKING:
+    'Customer is interested in a candidate or wants pricing. Use get_maid_profile for details and get_pricing for fees. Offer to arrange an interview. Be specific and concrete.',
+  CLOSE:
+    'Customer is wrapping up. Acknowledge briefly and warmly. Leave the door open for future contact. Do NOT call tools.',
+};
+
+const OPERATING_DIRECTIVE = `═══ OPERATING RULES ═══
+• You are speaking DIRECTLY to the customer on WhatsApp. Your output IS the message they receive — no preamble like "Sure, I can help".
+• Reply length: 1–3 short sentences. Plain text only — WhatsApp does not render markdown.
+• ONE WhatsApp message per turn. No multi-part bursts.
+• Use the customer's name once you know it. Never "Dear Sir/Madam".
+• ONE question per turn at most. Don't interrogate.
+• NEVER invent candidates, prices, availability, or policies. Use the tools when they're enabled.
+• NEVER share a maid's full name, passport number, exact location, or phone before a confirmed booking.
+• We place Ethiopian domestic workers in the GCC only. Politely decline anything else.
+
+ESCALATE (call escalate_to_human) ONLY for: complaints, refunds, contracts, visa/legal specifics, safety concerns, customer is angry, or off-topic after one polite decline. NEVER escalate because a tool errored or because a question is vague — ask back instead.
+
+When in doubt: ask a brief clarifying question, do NOT call a tool, do NOT escalate.`;
+
+// ════════════════════════════════════════════════════════════════════
+// Stage-appropriate holding line (replaces the old "let me check with
+// a colleague" fallback, which was dishonest and tone-deaf for greetings)
+// ════════════════════════════════════════════════════════════════════
+
+function stageHoldingReply(stage: Stage, lang: Lang): string {
+  const en: Record<Stage, string> = {
+    GREETING: 'Hello! How can I help you today?',
+    DISCOVERY: 'Could you tell me a little more about what you’re looking for?',
+    QUALIFICATION: 'Could you give me a bit more detail so I can help you better?',
+    RECOMMENDATION: 'Let me get one of our team on this — they’ll be in touch shortly.',
+    BOOKING: 'Let me get one of our team on this — they’ll be in touch shortly.',
+    CLOSE: 'Thanks for reaching out!',
+  };
+  const ar: Record<Stage, string> = {
+    GREETING: 'مرحباً! كيف يمكنني مساعدتك اليوم؟',
+    DISCOVERY: 'هل يمكنك إخباري المزيد عن ما تبحث عنه؟',
+    QUALIFICATION: 'هل يمكنك إعطائي تفاصيل أكثر حتى أساعدك بشكل أفضل؟',
+    RECOMMENDATION: 'سأطلب من أحد أعضاء فريقنا متابعة هذا — سيتواصلون معك قريباً.',
+    BOOKING: 'سأطلب من أحد أعضاء فريقنا متابعة هذا — سيتواصلون معك قريباً.',
+    CLOSE: 'شكراً لتواصلك معنا!',
+  };
+  if (lang === 'Arabic' || lang === 'Urdu') return ar[stage];
+  return en[stage];
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Helpers
+// ════════════════════════════════════════════════════════════════════
+
+function stringifyHistoryMessage(m: HistoryRow): string {
   const text = (m.content_text ?? '').trim();
   if (text) return text;
   return `[${m.content_type ?? 'message'}]`;
@@ -307,39 +554,9 @@ function filterTools(all: ToolHandler[], allowList: string[] | null): ToolHandle
   return all.filter((t) => allowList.includes(t.name));
 }
 
-function defaultPersona(businessName: string | null): string {
-  const name = businessName?.trim() || 'this business';
-  return `You are the WhatsApp customer-service agent for ${name}.
-Speak warmly, in 1-3 short sentences per reply, matching the customer's language.
-Acknowledge before you offer or sell. Never invent prices, candidates, or
-availability — call a tool first.`;
-}
-
-function buildAgentDirective(tools: ToolHandler[]): string {
-  return `## OPERATING RULES — IMPORTANT
-- You speak DIRECTLY to the customer on WhatsApp. Whatever final text you produce IS the message they will receive. No "Sure, I can help" preamble — just speak like a human.
-- Reply length: 1-3 short sentences. Plain text only. No markdown — WhatsApp does not render it.
-- Match the customer's language (English, Arabic, Amharic, Urdu, etc.).
-
-## WHEN TO USE TOOLS (and when NOT to)
-- DO NOT call tools for greetings ("Hi", "Hello", "السلام عليكم"), small talk, thanks, or yes/no acknowledgements. Just reply naturally.
-- DO NOT call tools when you have enough info already from the conversation history (e.g. you just searched maids; don't search again on the next turn).
-- DO call tools BEFORE making specific claims: recommending a candidate (\`search_maids\` / \`get_maid_profile\`), quoting any fee (\`get_pricing\`), or referencing a posted job (\`list_jobs\`). NEVER fabricate.
-- If a tool returns no results or an error, acknowledge honestly. Don't loop calling the same tool with different args more than twice.
-
-## ESCALATION
-- For complaints, refunds, contracts, safety/abuse concerns, or anything genuinely outside what your tools can answer: call \`escalate_to_human\` THEN send ONE short reply telling the customer a human agent will be in touch.
-
-## OUTPUT
-- One reply per customer message. No multi-part bursts.
-- If you are unsure what to do, prefer a brief clarifying question over a tool call.
-
-Available tools: ${tools.map((t) => t.name).join(', ')}.`;
-}
-
 /**
- * Send via Meta + persist to DB. Service-role insert (RLS already
- * allows service role on messages — used by the webhook).
+ * Send via Meta + persist to DB with agent_kind='ai'. Service-role insert
+ * (RLS already permits service role on messages — used by the webhook).
  */
 async function postAndPersist(
   sb: SupabaseClient,
@@ -361,7 +578,6 @@ async function postAndPersist(
     waMessageId = r.messageId;
   } catch (e) {
     console.error('[ai-agent] meta send failed:', e instanceof Error ? e.message : e);
-    // Persist as failed so the inbox shows the attempt + the error.
     await sb.from('messages').insert({
       conversation_id: conversationId,
       sender_type: 'agent',
