@@ -671,6 +671,20 @@ const INSERT_BOOKING_GQL = /* GraphQL */ `
   }
 `;
 
+/**
+ * Notify the maid via the Ethiopian Maids in-app notifications table.
+ * The mobile/web app polls this table and surfaces a push/banner.
+ * Avoids the Meta-template requirement that blocks direct WhatsApp
+ * first-touch to the maid.
+ */
+const NOTIFY_MAID_GQL = /* GraphQL */ `
+  mutation NotifyMaid($obj: notifications_insert_input!) {
+    insert_notifications_one(object: $obj) {
+      id
+    }
+  }
+`;
+
 interface MaidLookupRow {
   id: string;
   first_name: string | null;
@@ -910,9 +924,33 @@ export const bookInterview: ToolHandler = {
     const meetingUrl = makeMeetingUrl(booking.id);
     const timePretty = formatScheduledTime(isoTime);
 
-    // 5. Try to fetch the maid's phone for ops follow-up (informational
-    // only — actually messaging her requires an approved Meta template
-    // and is deferred to V2).
+    // 5. Notify the maid via Ethiopian Maids in-app notifications.
+    // This avoids Meta's template requirement for first-touch WhatsApp.
+    // Non-fatal — booking still succeeds if notification fails.
+    let maidNotified = false;
+    try {
+      await hasura.query(NOTIFY_MAID_GQL, {
+        obj: {
+          user_id: maid.id, // maid_profiles.id IS the Firebase user_id
+          type: 'interview_invitation',
+          title: 'New interview request',
+          message: `A sponsor has requested an interview ${timePretty}. Tap to join the video call.`,
+          link: meetingUrl,
+          action_url: meetingUrl,
+          related_id: booking.id,
+          related_type: 'booking',
+          priority: 'high',
+          read: false,
+          delivery_channels: { in_app: true, push: true },
+        },
+      });
+      maidNotified = true;
+    } catch (e) {
+      console.warn('[book_interview] maid notification insert failed:',
+        e instanceof Error ? e.message : e);
+    }
+
+    // 6. Maid phone (for ops follow-up only — UI not yet displaying it)
     let maidPhone: string | null = null;
     try {
       const data = await hasura.query<{
@@ -921,6 +959,60 @@ export const bookInterview: ToolHandler = {
       maidPhone = data.maid_profiles_by_pk?.alternative_phone || data.maid_profiles_by_pk?.phone_number || null;
     } catch {
       /* non-fatal */
+    }
+
+    // 7. Schedule sponsor reminders (T-60min and T-10min).
+    // Only schedules reminders whose due_at is strictly in the future
+    // (e.g. if booking is in 30min, only the T-10 reminder fires).
+    const sponsorPhone = ctx.contactPhone;
+    const reminderRows: Array<{
+      user_id: string;
+      conversation_id: string;
+      recipient_phone: string;
+      message_text: string;
+      due_at: string;
+      related_kind: string;
+      related_id: string;
+    }> = [];
+    const T_MINUS_60 = new Date(scheduledAt.getTime() - 60 * 60_000);
+    const T_MINUS_10 = new Date(scheduledAt.getTime() - 10 * 60_000);
+    const now = Date.now();
+    if (T_MINUS_60.getTime() > now + 60_000) {
+      reminderRows.push({
+        user_id: ctx.userId,
+        conversation_id: ctx.conversationId,
+        recipient_phone: sponsorPhone,
+        message_text:
+          `Reminder: your interview with ${maid.first_name || 'the candidate'} starts in 1 hour. ` +
+          `Join link: ${meetingUrl}`,
+        due_at: T_MINUS_60.toISOString(),
+        related_kind: 'interview',
+        related_id: booking.id,
+      });
+    }
+    if (T_MINUS_10.getTime() > now + 60_000) {
+      reminderRows.push({
+        user_id: ctx.userId,
+        conversation_id: ctx.conversationId,
+        recipient_phone: sponsorPhone,
+        message_text:
+          `Starting in 10 minutes: your interview with ${maid.first_name || 'the candidate'}. ` +
+          `Join now: ${meetingUrl}`,
+        due_at: T_MINUS_10.toISOString(),
+        related_kind: 'interview',
+        related_id: booking.id,
+      });
+    }
+    let remindersScheduled = 0;
+    if (reminderRows.length > 0) {
+      const { error: remErr } = await ctx.supabase
+        .from('ai_scheduled_reminders')
+        .insert(reminderRows);
+      if (remErr) {
+        console.warn('[book_interview] reminder insert failed:', remErr.message);
+      } else {
+        remindersScheduled = reminderRows.length;
+      }
     }
 
     return {
@@ -932,9 +1024,11 @@ export const bookInterview: ToolHandler = {
       scheduled_at_friendly: timePretty,
       duration_minutes: durationMinutes,
       meeting_url: meetingUrl,
-      maid_contact_pending: !!maidPhone,
+      maid_notified_in_app: maidNotified,
+      maid_phone_on_file: !!maidPhone,
+      reminders_scheduled: remindersScheduled,
       note:
-        `Interview booked. Your FINAL text reply to the customer MUST include: (a) confirmation with maid name + scheduled time "${timePretty}", (b) the video link ${meetingUrl}, (c) note "We'll confirm with ${maid.first_name || 'the candidate'} and send a reminder before the call." Keep it warm and 2-3 short lines. Do NOT send the link as a separate message — include it in the same reply.`,
+        `Interview booked. Your FINAL text reply MUST include: (1) confirmation with maid name + scheduled time "${timePretty}", (2) the video link ${meetingUrl}, (3) mention that we've notified ${maid.first_name || 'the candidate'} ${maidNotified ? 'via her app' : '(our team will follow up with her)'} and that ${remindersScheduled > 0 ? `we'll send you a reminder ${remindersScheduled === 2 ? '1 hour and 10 minutes' : remindersScheduled === 1 ? '10 minutes' : ''} before` : 'the time is locked in'}. Keep it warm, 2-3 short lines, plain text only.`,
     };
   },
 };
