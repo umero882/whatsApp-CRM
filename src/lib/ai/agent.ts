@@ -42,7 +42,7 @@ import type { ToolHandler, ToolContext } from './tools/registry';
 import { findTool, toolsToSpecs } from './tools/registry';
 
 const FALLBACK_REPLY =
-  "Thanks for reaching out — let me check on this with a colleague and get back to you shortly.";
+  "Thanks for reaching out — one of our agents will be with you shortly.";
 
 interface AgentConfigRow {
   user_id: string;
@@ -228,6 +228,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     }
 
     if (result.kind === 'text') {
+      console.log('[ai-agent] turn', turn + 1, 'text reply:', result.text.slice(0, 120));
       await postAndPersist(sb, waCfg, accessToken, contact, conv.id, result.text);
       const escalated = toolsUsed.includes('escalate_to_human');
       return escalated
@@ -237,6 +238,10 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
 
     // Tool calls — execute each, append assistant turn + tool results,
     // then loop. Run sequentially (V1) for predictability.
+    console.log(
+      '[ai-agent] turn', turn + 1, 'tool_calls:',
+      result.calls.map((c) => `${c.name}(${Object.keys(c.arguments).join(',')})`).join(' '),
+    );
     messages.push({
       role: 'assistant',
       content: result.rawAssistantText ?? null,
@@ -258,6 +263,10 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
         console.warn('[ai-agent] tool failed:', call.name, msg);
         resultJson = { error: msg };
       }
+      // Log tool outcome (truncated) so we can see why the LLM keeps trying
+      // when it does. Avoids needing to re-run to diagnose loops.
+      const summary = safeJsonString(resultJson).slice(0, 200);
+      console.log('[ai-agent]   →', call.name, 'result:', summary);
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
@@ -308,14 +317,24 @@ availability — call a tool first.`;
 
 function buildAgentDirective(tools: ToolHandler[]): string {
   return `## OPERATING RULES — IMPORTANT
-- You speak directly to the customer on WhatsApp. Whatever final text you produce IS the message they will receive. Do not include "Sure, I can help" preamble. Speak like a human.
-- Reply length: 1-3 short sentences. Use line breaks sparingly. No markdown formatting — WhatsApp does not render it well. Use plain text only.
+- You speak DIRECTLY to the customer on WhatsApp. Whatever final text you produce IS the message they will receive. No "Sure, I can help" preamble — just speak like a human.
+- Reply length: 1-3 short sentences. Plain text only. No markdown — WhatsApp does not render it.
 - Match the customer's language (English, Arabic, Amharic, Urdu, etc.).
-- BEFORE recommending any candidate, price, or availability claim, you MUST call the relevant tool. Never fabricate.
-- If a tool returns no results, say so honestly and offer to broaden criteria or escalate.
-- For complaints, refunds, contracts, safety/abuse concerns, or anything beyond your tools' scope: call \`escalate_to_human\` THEN send ONE short reply telling the customer a human agent will be in touch.
-- One reply per customer message. Don't send multi-part bursts.
-- Available tools: ${tools.map((t) => t.name).join(', ')}.`;
+
+## WHEN TO USE TOOLS (and when NOT to)
+- DO NOT call tools for greetings ("Hi", "Hello", "السلام عليكم"), small talk, thanks, or yes/no acknowledgements. Just reply naturally.
+- DO NOT call tools when you have enough info already from the conversation history (e.g. you just searched maids; don't search again on the next turn).
+- DO call tools BEFORE making specific claims: recommending a candidate (\`search_maids\` / \`get_maid_profile\`), quoting any fee (\`get_pricing\`), or referencing a posted job (\`list_jobs\`). NEVER fabricate.
+- If a tool returns no results or an error, acknowledge honestly. Don't loop calling the same tool with different args more than twice.
+
+## ESCALATION
+- For complaints, refunds, contracts, safety/abuse concerns, or anything genuinely outside what your tools can answer: call \`escalate_to_human\` THEN send ONE short reply telling the customer a human agent will be in touch.
+
+## OUTPUT
+- One reply per customer message. No multi-part bursts.
+- If you are unsure what to do, prefer a brief clarifying question over a tool call.
+
+Available tools: ${tools.map((t) => t.name).join(', ')}.`;
 }
 
 /**
