@@ -1,9 +1,17 @@
 import type {
   ChatProvider,
   ChatCallOptions,
+  ChatCallToolsOptions,
+  ChatToolsResult,
   ProviderInit,
 } from './types';
 import { ProviderError } from './types';
+import { openAIChatWithTools } from './openai';
+
+const OPENROUTER_HEADERS = {
+  'HTTP-Referer': 'https://github.com/umero882/whatsApp-CRM',
+  'X-Title': 'wacrm',
+};
 
 /**
  * OpenRouter is wire-compatible with OpenAI's Chat Completions API.
@@ -38,9 +46,7 @@ export class OpenRouterProvider implements ChatProvider {
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',
-        // Recommended by OpenRouter for usage attribution.
-        'HTTP-Referer': 'https://github.com/umero882/whatsApp-CRM',
-        'X-Title': 'wacrm',
+        ...OPENROUTER_HEADERS,
       },
       body: JSON.stringify(body),
     });
@@ -53,6 +59,10 @@ export class OpenRouterProvider implements ChatProvider {
       throw new ProviderError('OpenRouter returned no content', res.status, raw);
     }
     return content;
+  }
+
+  async chatWithTools(opts: ChatCallToolsOptions): Promise<ChatToolsResult> {
+    return openAIChatWithTools(this.baseUrl, this.apiKey, this.model, opts, OPENROUTER_HEADERS);
   }
 
   async ping(): Promise<{ ok: true; model: string } | { ok: false; error: string }> {

@@ -273,6 +273,31 @@ export async function POST(request: Request) {
       )
     }
 
+    // Pause the AI agent for this conversation. The /api/whatsapp/send
+    // route is the human-driven path, so any send through here is a
+    // signal a human is now driving. The pause window comes from
+    // ai_agent_config.human_pause_minutes (default 60). Skipped if
+    // the user has no agent config — the column update would simply
+    // be a no-op but we avoid the extra lookup.
+    let aiPauseClause: { ai_paused_until: string } | Record<string, never> = {}
+    try {
+      const { data: agentCfg } = await supabaseAdmin()
+        .from('ai_agent_config')
+        .select('human_pause_minutes, is_enabled')
+        .eq('user_id', user.id)
+        .maybeSingle()
+      if (agentCfg?.is_enabled) {
+        const minutes = Math.max(0, Number(agentCfg.human_pause_minutes) || 60)
+        const until = new Date(Date.now() + minutes * 60_000).toISOString()
+        aiPauseClause = { ai_paused_until: until }
+      }
+    } catch (err) {
+      console.warn(
+        '[ai-agent] pause-on-human-send lookup failed:',
+        err instanceof Error ? err.message : err,
+      )
+    }
+
     // Update conversation
     await supabase
       .from('conversations')
@@ -280,6 +305,7 @@ export async function POST(request: Request) {
         last_message_text: content_text || `[${message_type}]`,
         last_message_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
+        ...aiPauseClause,
       })
       .eq('id', conversation_id)
 

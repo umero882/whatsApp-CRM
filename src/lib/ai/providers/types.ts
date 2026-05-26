@@ -31,11 +31,84 @@ export interface ChatProvider {
   /** Returns the raw assistant text (or JSON string if `jsonMode` set). */
   chat(opts: ChatCallOptions): Promise<string>;
   /**
+   * Returns either a text reply or a list of tool calls the agent
+   * runner must execute and feed back. Used by the autonomous reply
+   * agent (`src/lib/ai/agent.ts`). Providers without tool support
+   * throw `ProviderError` (e.g. Ollama with non-tool-capable model).
+   */
+  chatWithTools(opts: ChatCallToolsOptions): Promise<ChatToolsResult>;
+  /**
    * Cheap connectivity / auth check. Should perform a minimal request
    * that fails on bad credentials. Used by the settings "Test" button.
    */
   ping(): Promise<{ ok: true; model: string } | { ok: false; error: string }>;
 }
+
+// ============================================================
+// Tool-calling types
+// ============================================================
+
+/**
+ * Definition of a single tool the LLM may call. Schema is
+ * JSON-Schema (object). Each provider serializes this slightly
+ * differently — the adapters handle that.
+ */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  parameters: {
+    type: 'object';
+    properties: Record<string, unknown>;
+    required?: string[];
+    additionalProperties?: boolean;
+  };
+}
+
+/**
+ * One tool invocation in an assistant turn. `id` is the provider's
+ * call id — must be echoed back on the corresponding tool-result
+ * message so the LLM can pair them.
+ */
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+/**
+ * What the runner sends back to the LLM for each tool call.
+ */
+export interface ToolResultMessage {
+  role: 'tool';
+  tool_call_id: string;
+  /** JSON-stringified result the LLM will read. */
+  content: string;
+}
+
+/**
+ * Extended message types accepted by chatWithTools — includes
+ * assistant turns that *contained* tool calls and the tool-result
+ * messages the runner produced.
+ */
+export type AgentMessage =
+  | { role: 'system'; content: string }
+  | { role: 'user'; content: string }
+  | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[] }
+  | ToolResultMessage;
+
+export interface ChatCallToolsOptions {
+  messages: AgentMessage[];
+  tools: ToolSpec[];
+  /** 0..2. Defaults to 0.3 for agentic flows (less creative). */
+  temperature?: number;
+  maxTokens?: number;
+  /** Force the model to call exactly one tool — used for first turn nudge. */
+  forceToolUse?: boolean;
+}
+
+export type ChatToolsResult =
+  | { kind: 'text'; text: string }
+  | { kind: 'tool_calls'; calls: ToolCall[]; rawAssistantText?: string };
 
 export interface ProviderInit {
   model: string;
