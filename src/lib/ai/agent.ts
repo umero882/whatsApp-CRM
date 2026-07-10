@@ -32,6 +32,7 @@ import type {
 } from './providers/types';
 import {
   ETHIOPIAN_MAIDS_TOOLS,
+  type AppCardLanguage,
 } from './tools/ethiopian-maids';
 import type { ToolHandler, ToolContext } from './tools/registry';
 import { findTool, toolsToSpecs } from './tools/registry';
@@ -282,7 +283,28 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     }
 
     if (result.kind === 'text') {
-      const text = result.text.trim();
+      let text = result.text.trim();
+      // Deterministic guard: small models (seen with gpt-4o-mini)
+      // sometimes NARRATE the card tool — "(send_app_download_card)" —
+      // instead of calling it. If the final text references the tool,
+      // send the card for real and strip the reference so the customer
+      // never sees internal tool names.
+      const narration = stripCardNarration(text);
+      if (narration.mentioned) {
+        text = narration.cleaned || cardPointerLine(language);
+        if (!toolsUsed.includes('send_app_download_card')) {
+          const cardTool = findTool(allowedTools, 'send_app_download_card');
+          if (cardTool) {
+            try {
+              await cardTool.handler({ language: CARD_LANG[language] }, toolCtx);
+              toolsUsed.push('send_app_download_card');
+              console.warn('[ai-agent] model narrated send_app_download_card — server sent the card itself');
+            } catch (e) {
+              console.warn('[ai-agent] narration-guard card send failed:', e instanceof Error ? e.message : e);
+            }
+          }
+        }
+      }
       if (!text) {
         // Empty content with no tool calls — extremely rare but seen
         // when models go offline mid-response. Retry once with a
@@ -516,6 +538,40 @@ function buildCustomerContext(
 
 type Lang = 'English' | 'Arabic' | 'Amharic' | 'Urdu' | 'Hindi';
 
+/** Conversation language → app-card copy language. */
+const CARD_LANG: Record<Lang, AppCardLanguage> = {
+  English: 'en',
+  Arabic: 'ar',
+  Amharic: 'am',
+  Urdu: 'ar',
+  Hindi: 'en',
+};
+
+/**
+ * Detect a model NARRATING the app-card tool in customer-facing text
+ * (e.g. "Tap the button below 🌸 (send_app_download_card)") and strip
+ * every reference. Pure — exported for tests.
+ */
+export function stripCardNarration(text: string): { cleaned: string; mentioned: boolean } {
+  if (!/send_app_download_card/i.test(text)) {
+    return { cleaned: text, mentioned: false };
+  }
+  const cleaned = text
+    .replace(/[([{]?\s*(?:call(?:ing)?\s+)?send_app_download_card\s*(?:\(\s*\))?\s*[)\]}]?/gi, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]+([.,!?])/g, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return { cleaned, mentioned: true };
+}
+
+/** Fallback one-liner when the model's whole reply was tool narration. */
+function cardPointerLine(lang: Lang): string {
+  if (lang === 'Arabic' || lang === 'Urdu') return 'اضغط الزر بالأعلى لتحميل تطبيقنا الرسمي 🌸';
+  if (lang === 'Amharic') return 'ኦፊሴላዊ መተግበሪያችንን ለማውረድ ከላይ ያለውን ቁልፍ ይጫኑ 🌸';
+  return 'Tap the button above to get our official app 🌸';
+}
+
 function detectLanguage(text: string): Lang {
   if (!text) return 'English';
   // Amharic uses Ethiopic script (U+1200–U+137F)
@@ -585,7 +641,7 @@ ${toolsLine}
 
 const STAGE_GUIDANCE: Record<Stage, string> = {
   GREETING:
-    'This is a fresh conversation. Send a warm welcome that names the business. Do NOT assume the customer wants to hire OR is looking for work — you do not know yet. Do NOT ask questions yet, do NOT call tools. One friendly sentence is plenty.',
+    'This is a fresh conversation. Send a warm welcome that names the business. Do NOT assume the customer wants to hire OR is looking for work — you do not know yet. Do NOT ask questions yet. One friendly sentence is plenty. ONE exception: if their message ALREADY asks to register, download the app, hire, or find work, call the send_app_download_card TOOL (a real tool call — never type its name in your text) and reply with one sentence pointing at the card.',
   DISCOVERY:
     'You have greeted the customer. FIRST triage: ask ONE question — "Are you already registered with us (an existing customer), or new here?" — unless the history already answers it. NEW customers who want to register, hire, or find work → call send_app_download_card, then ONE short sentence pointing at the card; do NOT start registration or data collection in chat. EXISTING customers or anyone with a service issue → find out what they need, per the INTENT GUIDANCE above. No other tools.',
   QUALIFICATION:
