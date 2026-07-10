@@ -32,6 +32,7 @@ import type {
 } from './providers/types';
 import {
   ETHIOPIAN_MAIDS_TOOLS,
+  type AppCardLanguage,
 } from './tools/ethiopian-maids';
 import type { ToolHandler, ToolContext } from './tools/registry';
 import { findTool, toolsToSpecs } from './tools/registry';
@@ -51,8 +52,27 @@ type Stage =
 /** Stages where the model is allowed to call tools. */
 const TOOL_STAGES: ReadonlySet<Stage> = new Set(['RECOMMENDATION', 'BOOKING']);
 
+/** Tools that stay available in every stage, even tool-gated ones. */
+const ALL_STAGE_TOOLS: ReadonlySet<string> = new Set(['send_app_download_card']);
+
 /** 24h gap = treat as a fresh conversation. */
 const RETURN_GAP_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Admin WhatsApp number (digits only) that receives escalation forwards.
+ * Override with ESCALATION_WHATSAPP_NUMBER in .env.local.
+ */
+const DEFAULT_ESCALATION_PHONE = '971588767821';
+
+/** Ethiopian Maids mobile app — the registration/browsing funnel. */
+const APP_INFO_BLOCK = `═══ ETHIOPIAN MAIDS APP (registration happens HERE, not in chat) ═══
+• Android: live on Google Play. • iPhone: coming soon to the App Store.
+Registration, profile creation, browsing candidates, and applying for jobs
+all happen in the app. NEVER collect registration details over chat.
+When directing someone to the app, call send_app_download_card (available
+in every stage) — it sends the official Google Play card with a download
+button. NEVER paste the store URL as plain text: customers fear scam links
+and won't tap them.`;
 
 interface AgentConfigRow {
   user_id: string;
@@ -199,6 +219,8 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     userId: conv.user_id,
     conversationId: conv.id,
     contactPhone: contact.phone,
+    contactName: contact.name ?? null,
+    escalationPhone: process.env.ESCALATION_WHATSAPP_NUMBER || DEFAULT_ESCALATION_PHONE,
     hasuraUrl: agent.hasura_url,
     hasuraAdminSecret,
     whatsapp: {
@@ -210,14 +232,21 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   const allowedTools = filterTools(ETHIOPIAN_MAIDS_TOOLS, agent.enabled_tools);
   // STRONG GATE: when stage forbids tools, the model literally can't
   // call them. Stronger than relying on the prompt to say "don't".
-  const stageTools: ToolHandler[] = allowTools ? allowedTools : [];
+  // Exception: send_app_download_card stays available in EVERY stage —
+  // directing new customers to the app is the primary action in
+  // DISCOVERY/QUALIFICATION, exactly where the other tools are gated.
+  const stageTools: ToolHandler[] = allowTools
+    ? allowedTools
+    : allowedTools.filter((t) => ALL_STAGE_TOOLS.has(t.name));
   const toolSpecs = toolsToSpecs(stageTools);
 
   // ─── Compose system prompt ──────────────────────────────────────────
   const persona = (agent.system_prompt ?? '').trim() || defaultPersona(agent.business_name);
-  const runtimeBlock = buildRuntimeBlock(stage, intent, language, customerContext, allowedTools, allowTools);
+  const runtimeBlock = buildRuntimeBlock(stage, intent, language, customerContext, stageTools, allowTools);
   const directive = OPERATING_DIRECTIVE;
-  const systemPrompt = [persona, runtimeBlock, directive].join('\n\n');
+  // APP_INFO_BLOCK is injected server-side (not only in the editable
+  // persona) so the app-funnel policy survives any custom prompt.
+  const systemPrompt = [persona, APP_INFO_BLOCK, runtimeBlock, directive].join('\n\n');
 
   console.log('[ai-agent] start convo=%s stage=%s intent=%s lang=%s tools=%d ctx={returning:%s,name:%s}',
     conv.id, stage, intent, language, stageTools.length, customerContext.isReturning, customerContext.name ?? '?');
@@ -254,7 +283,28 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     }
 
     if (result.kind === 'text') {
-      const text = result.text.trim();
+      let text = result.text.trim();
+      // Deterministic guard: small models (seen with gpt-4o-mini)
+      // sometimes NARRATE the card tool — "(send_app_download_card)" —
+      // instead of calling it. If the final text references the tool,
+      // send the card for real and strip the reference so the customer
+      // never sees internal tool names.
+      const narration = stripCardNarration(text);
+      if (narration.mentioned) {
+        text = narration.cleaned || cardPointerLine(language);
+        if (!toolsUsed.includes('send_app_download_card')) {
+          const cardTool = findTool(allowedTools, 'send_app_download_card');
+          if (cardTool) {
+            try {
+              await cardTool.handler({ language: CARD_LANG[language] }, toolCtx);
+              toolsUsed.push('send_app_download_card');
+              console.warn('[ai-agent] model narrated send_app_download_card — server sent the card itself');
+            } catch (e) {
+              console.warn('[ai-agent] narration-guard card send failed:', e instanceof Error ? e.message : e);
+            }
+          }
+        }
+      }
       if (!text) {
         // Empty content with no tool calls — extremely rare but seen
         // when models go offline mid-response. Retry once with a
@@ -488,6 +538,40 @@ function buildCustomerContext(
 
 type Lang = 'English' | 'Arabic' | 'Amharic' | 'Urdu' | 'Hindi';
 
+/** Conversation language → app-card copy language. */
+const CARD_LANG: Record<Lang, AppCardLanguage> = {
+  English: 'en',
+  Arabic: 'ar',
+  Amharic: 'am',
+  Urdu: 'ar',
+  Hindi: 'en',
+};
+
+/**
+ * Detect a model NARRATING the app-card tool in customer-facing text
+ * (e.g. "Tap the button below 🌸 (send_app_download_card)") and strip
+ * every reference. Pure — exported for tests.
+ */
+export function stripCardNarration(text: string): { cleaned: string; mentioned: boolean } {
+  if (!/send_app_download_card/i.test(text)) {
+    return { cleaned: text, mentioned: false };
+  }
+  const cleaned = text
+    .replace(/[([{]?\s*(?:call(?:ing)?\s+)?send_app_download_card\s*(?:\(\s*\))?\s*[)\]}]?/gi, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]+([.,!?])/g, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return { cleaned, mentioned: true };
+}
+
+/** Fallback one-liner when the model's whole reply was tool narration. */
+function cardPointerLine(lang: Lang): string {
+  if (lang === 'Arabic' || lang === 'Urdu') return 'اضغط الزر بالأعلى لتحميل تطبيقنا الرسمي 🌸';
+  if (lang === 'Amharic') return 'ኦፊሴላዊ መተግበሪያችንን ለማውረድ ከላይ ያለውን ቁልፍ ይጫኑ 🌸';
+  return 'Tap the button above to get our official app 🌸';
+}
+
 function detectLanguage(text: string): Lang {
   if (!text) return 'English';
   // Amharic uses Ethiopic script (U+1200–U+137F)
@@ -508,6 +592,9 @@ function detectLanguage(text: string): Lang {
 function defaultPersona(businessName: string | null): string {
   const name = businessName?.trim() || 'this business';
   return `You are the WhatsApp customer-service agent for ${name}.
+Your chat is for CUSTOMER SERVICE — helping existing customers with their
+issues and questions. Registration and sign-up happen in our mobile app,
+never over chat: direct new customers to download the app instead.
 Customers can be EITHER sponsors looking to hire a maid OR maids/job-seekers
 looking for work — never assume. Read the INTENT GUIDANCE below before
 responding.
@@ -521,18 +608,20 @@ function buildRuntimeBlock(
   intent: Intent,
   language: Lang,
   ctx: CustomerContext,
-  allTools: ToolHandler[],
+  activeTools: ToolHandler[],
   toolsAllowedThisTurn: boolean,
 ): string {
-  const toolList = allTools.map((t) => `${t.name} — ${t.description.split('.')[0]}.`).join('\n  • ');
+  const toolList = activeTools.map((t) => `${t.name} — ${t.description.split('.')[0]}.`).join('\n  • ');
   const stageGuide = STAGE_GUIDANCE[stage];
   const intentGuide = INTENT_GUIDANCE[intent];
   const customerLine = ctx.name
     ? `Customer name: ${ctx.name}${ctx.isReturning ? ' (returning customer — DO NOT re-greet, continue naturally)' : ''}`
     : (ctx.isReturning ? 'Returning customer (DO NOT re-greet, continue from previous context).' : 'New customer — first contact.');
   const toolsLine = toolsAllowedThisTurn
-    ? `Tools available NOW (${allTools.length}):\n  • ${toolList}`
-    : `Tools are DISABLED for this turn (stage ${stage}). Reply in plain text only — do not attempt to call tools.`;
+    ? `Tools available NOW (${activeTools.length}):\n  • ${toolList}`
+    : (activeTools.length > 0
+      ? `Most tools are DISABLED for this turn (stage ${stage}). ONLY these may be called:\n  • ${toolList}\nAnything else: reply in plain text.`
+      : `Tools are DISABLED for this turn (stage ${stage}). Reply in plain text only — do not attempt to call tools.`);
   return `═══ RUNTIME CONTEXT ═══
 STAGE: ${stage}
 INTENT: ${intent}
@@ -552,11 +641,11 @@ ${toolsLine}
 
 const STAGE_GUIDANCE: Record<Stage, string> = {
   GREETING:
-    'This is a fresh conversation. Send a warm welcome that names the business. Do NOT assume the customer wants to hire OR is looking for work — you do not know yet. Do NOT ask questions yet, do NOT call tools. One friendly sentence is plenty.',
+    'This is a fresh conversation. Send a warm welcome that names the business. Do NOT assume the customer wants to hire OR is looking for work — you do not know yet. Do NOT ask questions yet. One friendly sentence is plenty. ONE exception: if their message ALREADY asks to register, download the app, hire, or find work, call the send_app_download_card TOOL (a real tool call — never type its name in your text) and reply with one sentence pointing at the card.',
   DISCOVERY:
-    'You have greeted the customer. Now figure out WHAT they want. Read the INTENT GUIDANCE above and ACT ON IT — if intent=sponsor, ask sponsor questions. If intent=job_seeker, ask THEM about their experience and where they want to work. If intent=unknown, ask ONE clarifying question: "Are you looking to hire a maid, or are you looking for work yourself?" Do NOT call tools.',
+    'You have greeted the customer. FIRST triage: ask ONE question — "Are you already registered with us (an existing customer), or new here?" — unless the history already answers it. NEW customers who want to register, hire, or find work → call send_app_download_card, then ONE short sentence pointing at the card; do NOT start registration or data collection in chat. EXISTING customers or anyone with a service issue → find out what they need, per the INTENT GUIDANCE above. No other tools.',
   QUALIFICATION:
-    'You know the customer intent (see INTENT GUIDANCE above). Gather the relevant basics with ONE question per turn, skipping what you already know from history. Do NOT call tools until you have enough info per the intent guidance.',
+    'You know the customer intent (see INTENT GUIDANCE above). If they are NEW and want to register/hire/find work, call send_app_download_card instead of qualifying in chat. For existing customers, gather the relevant basics with ONE question per turn, skipping what you already know from history. No other tools until you have enough info per the intent guidance.',
   RECOMMENDATION:
     'You have enough info to make a recommendation. Use the right tool for the intent (search_maids for sponsors, list_jobs for job seekers). Present 2-3 results max. Offer the next step.',
   BOOKING:
@@ -567,6 +656,13 @@ const STAGE_GUIDANCE: Record<Stage, string> = {
 
 const INTENT_GUIDANCE: Record<Intent, string> = {
   sponsor: `Customer is a SPONSOR seeking to HIRE a maid (family, employer, or representative).
+IF NEW (not yet registered with us): call send_app_download_card —
+registration and browsing candidates happen in the app. You may answer
+general questions (fees via get_pricing, how the service works) but do
+NOT run the full qualification/recommendation flow for unregistered
+customers; the app is the funnel.
+IF EXISTING customer (registered, or clearly already working with us):
+proceed with the flow below.
 Qualification questions to gather (one per turn, skip if already answered):
   1. Which emirate are you in?
   2. Live-in or live-out?
@@ -616,27 +712,25 @@ For pricing: call get_pricing(country: "UAE").`,
 
   job_seeker: `Customer IS a MAID looking for WORK (or someone applying on her behalf).
 Do NOT ask her to hire anyone. Do NOT ask which emirate she wants TO HIRE FROM.
-Qualification questions to gather (one per turn, skip if already answered):
-  1. Where are you currently located (country)?
-  2. How many years of experience as a domestic worker?
-  3. What skills — childcare, cooking, elderly care, cleaning?
-  4. Which destination country / emirate do you want to work in?
-  5. When are you available to start?
-  6. What languages do you speak?
-Recommendation: when you have country + experience + destination, call list_jobs
-with location (the destination) to surface matching openings. Present 1-3 open
-roles with title, location, salary range.
-For application: do NOT promise placement. Take down their details and tell them
-our recruitment team will reach out. Use escalate_to_human(reason: "job application")
-to flag for human follow-up.`,
+PRIMARY PATH — the app: registration and job applications happen in the
+Ethiopian Maids app. Call send_app_download_card (use language "am" for
+Amharic speakers) so she gets the official download card, and tell her to
+create her profile and apply inside the app. Do NOT collect registration
+details (passport, experience, availability) over chat.
+You MAY still call list_jobs to show 1-3 matching openings as a taste of
+what's available, then point her to the app to register and apply.
+Do NOT promise placement. Only use escalate_to_human for real service
+issues (complaint, payment, safety, existing application gone wrong) —
+NOT as the standard application path anymore.`,
 
   unknown: `You do NOT yet know if this customer wants to hire a maid (sponsor) or
-is looking for work themselves (job seeker). Your job in DISCOVERY is to find out
-with ONE clarifying question. Suggested phrasing:
-  English: "Are you looking to hire a maid, or are you looking for work yourself?"
-  Arabic:  "هل تبحث عن خادمة للتوظيف، أم تبحث عن عمل لنفسك؟"
-Do NOT assume one side. Do NOT ask emirate/duties yet — that only makes sense
-once we know they're a sponsor.`,
+is looking for work themselves (job seeker) — or whether they are an existing
+customer with a service issue. Triage with ONE question at a time, starting with:
+  English: "Are you already registered with us, or new here?"
+  Arabic:  "هل أنت مسجل لدينا بالفعل، أم جديد؟"
+NEW + wants to hire or find work → call send_app_download_card.
+EXISTING or has an issue → ask what they need help with and assist.
+Do NOT assume one side. Do NOT ask emirate/duties yet.`,
 };
 
 const OPERATING_DIRECTIVE = `═══ OPERATING RULES ═══
@@ -648,8 +742,10 @@ const OPERATING_DIRECTIVE = `═══ OPERATING RULES ═══
 • NEVER invent candidates, prices, availability, or policies. Use the tools when they're enabled.
 • NEVER share a maid's full name, passport number, exact location, or phone before a confirmed booking.
 • We place Ethiopian domestic workers in the GCC only. Politely decline anything else.
+• REGISTRATION POLICY: sign-up, profile creation, and job applications happen in the Ethiopian Maids app — never over chat. New customers get the official download card via send_app_download_card — NEVER a pasted store URL (customers fear scam links). Chat is for customer service.
 
 ESCALATE (call escalate_to_human) ONLY for: complaints, refunds, contracts, visa/legal specifics, safety concerns, customer is angry, or off-topic after one polite decline. NEVER escalate because a tool errored or because a question is vague — ask back instead.
+When you escalate, pass issue_summary with the concrete details — the tool forwards it WITH the customer's number to our human admin on WhatsApp. Then tell the customer their issue has been forwarded and a human will contact them on this number.
 
 When in doubt: ask a brief clarifying question, do NOT call a tool, do NOT escalate.`;
 

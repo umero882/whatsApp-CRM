@@ -13,7 +13,7 @@
  */
 
 import { makeHasuraClient, HasuraError } from './hasura';
-import { sendImageMessage } from '@/lib/whatsapp/meta-api';
+import { sendCtaUrlMessage, sendImageMessage, sendTextMessage } from '@/lib/whatsapp/meta-api';
 import { sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
 import type { ToolHandler, ToolContext } from './registry';
 
@@ -383,17 +383,46 @@ export const getPricing: ToolHandler = {
 };
 
 // ----------------------------------------------------------------
-// escalate_to_human (Supabase-backed)
+// escalate_to_human (Supabase-backed + WhatsApp forward to admin)
 // ----------------------------------------------------------------
+
+/**
+ * Compose the WhatsApp message the human admin receives when the AI
+ * escalates. Pure — exported for tests.
+ */
+export function buildEscalationForward(input: {
+  customerName: string | null;
+  customerPhone: string;
+  reason: string;
+  issueSummary: string | null;
+  urgent: boolean;
+}): string {
+  const digits = input.customerPhone.replace(/\D/g, '');
+  const lines = [
+    input.urgent ? '🔴 URGENT — human needed' : '🟠 Human needed',
+    `Customer: ${input.customerName?.trim() || 'Unknown'} (+${digits})`,
+    `Reason: ${input.reason}`,
+  ];
+  if (input.issueSummary?.trim()) lines.push(`Issue: ${input.issueSummary.trim()}`);
+  lines.push(`Reply directly: https://wa.me/${digits}`);
+  return lines.join('\n');
+}
+
 export const escalateToHuman: ToolHandler = {
   name: 'escalate_to_human',
   description:
     'Hand off to a human agent. Use when the customer is upset, asks for refunds, contract signing, raises safety concerns, or asks something the other tools genuinely cannot answer. ' +
-    'Pauses the AI for 24h on this conversation and tags it for human pickup. After calling this, send ONE short reply telling the customer a human will be in touch.',
+    'Forwards the issue AND the customer\'s WhatsApp number to the human admin, pauses the AI for 24h on this conversation, and tags it for human pickup. ' +
+    'Pass issue_summary with the concrete details the admin needs (what the customer wants, names/dates/amounts they mentioned). ' +
+    'After calling this, send ONE short reply telling the customer their issue has been forwarded and a human will contact them.',
   parameters: {
     type: 'object',
     properties: {
       reason: { type: 'string', description: 'One short sentence on why a human is needed.' },
+      issue_summary: {
+        type: 'string',
+        description: 'Concrete details for the admin: what the customer needs, plus any names, dates, amounts, or context they gave. 1-3 sentences.',
+      },
       urgent: { type: 'boolean', description: 'True for safety/abuse/trafficking concerns or active anger.' },
     },
     required: ['reason'],
@@ -401,6 +430,7 @@ export const escalateToHuman: ToolHandler = {
   },
   async handler(args, ctx) {
     const reason = String(args.reason ?? 'human_requested').slice(0, 200);
+    const issueSummary = typeof args.issue_summary === 'string' ? args.issue_summary.slice(0, 600) : null;
     const urgent = Boolean(args.urgent);
 
     const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
@@ -445,13 +475,209 @@ export const escalateToHuman: ToolHandler = {
       console.warn('[ai/escalate] tag failed (non-fatal):', e instanceof Error ? e.message : e);
     }
 
+    // Forward the issue + customer number to the human admin's WhatsApp.
+    // Uses the business number's own send credentials. Non-fatal: pause +
+    // tag above already happened, so a failed forward degrades to the old
+    // behavior instead of blocking the escalation.
+    let adminNotified = false;
+    if (ctx.escalationPhone && ctx.whatsapp) {
+      const forward = buildEscalationForward({
+        customerName: ctx.contactName,
+        customerPhone: ctx.contactPhone,
+        reason,
+        issueSummary,
+        urgent,
+      });
+      try {
+        await sendTextMessage({
+          phoneNumberId: ctx.whatsapp.phoneNumberId,
+          accessToken: ctx.whatsapp.accessToken,
+          to: sanitizePhoneForMeta(ctx.escalationPhone),
+          text: forward,
+        });
+        adminNotified = true;
+      } catch (e) {
+        // Most common cause: Meta's 24h customer-service window — the
+        // admin number hasn't messaged the business number recently, so
+        // free-form sends are rejected until they do.
+        console.error('[ai/escalate] admin forward failed:', e instanceof Error ? e.message : e);
+      }
+    } else {
+      console.warn('[ai/escalate] admin forward skipped: escalationPhone or whatsapp creds missing');
+    }
+
     return {
       ok: true,
       ai_paused_until: until,
       reason,
       urgent,
+      admin_notified: adminNotified,
+      note: adminNotified
+        ? 'Issue forwarded to the human admin on WhatsApp with the customer\'s number. Send ONE final reply telling the customer their issue has been passed to our team and someone will contact them on this number shortly.'
+        : 'Conversation is tagged for human pickup (direct admin forward could not be delivered). Send ONE final reply telling the customer our team will review and contact them on this number — do NOT promise an immediate response.',
+    };
+  },
+};
+
+// ----------------------------------------------------------------
+// send_app_download_card — official-looking interactive card that
+// directs the customer to the Ethiopian Maids app. Customers distrust
+// raw pasted URLs (scam fear), so this renders the official Google
+// Play badge as header image + a tappable "Open Google Play" button
+// instead of a bare link.
+// ----------------------------------------------------------------
+
+export const APP_PLAY_STORE_URL =
+  'https://play.google.com/store/apps/details?id=com.ethiopianmaids.app';
+
+/** Google's own hosted "Get it on Google Play" badge (official artwork). */
+const PLAY_BADGE_IMAGE_URL =
+  'https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png';
+
+export type AppCardLanguage = 'en' | 'ar' | 'am';
+
+export interface AppDownloadCard {
+  bodyText: string;
+  buttonText: string;
+  footerText: string;
+  headerImageUrl: string;
+  url: string;
+}
+
+/**
+ * Localized copy for the app-download card. Pure — exported for tests.
+ * Button text must stay ≤20 chars (Meta cta_url display_text limit).
+ */
+export function buildAppDownloadCard(language: AppCardLanguage): AppDownloadCard {
+  const copy: Record<AppCardLanguage, { body: string; button: string; footer: string }> = {
+    en: {
+      body:
+        'This is the official Ethiopian Maids app on Google Play. ' +
+        'Download it to register, browse candidates, and apply for jobs — all in one safe place.',
+      button: 'Open Google Play',
+      footer: 'iPhone app coming soon on the App Store',
+    },
+    ar: {
+      body:
+        'هذا هو تطبيق Ethiopian Maids الرسمي على متجر Google Play. ' +
+        'حمّله للتسجيل وتصفح المرشحات والتقديم على الوظائف — كل ذلك في مكان واحد آمن.',
+      button: 'افتح Google Play',
+      footer: 'تطبيق الآيفون قريباً على App Store',
+    },
+    am: {
+      body:
+        'ይህ በGoogle Play ላይ ያለው ኦፊሴላዊ የEthiopian Maids መተግበሪያ ነው። ' +
+        'ለመመዝገብ፣ እጩዎችን ለማየት እና ለስራ ለማመልከት ያውርዱት።',
+      button: 'Google Play ክፈት',
+      footer: 'የiPhone መተግበሪያ በቅርቡ በApp Store ላይ',
+    },
+  };
+  const c = copy[language] ?? copy.en;
+  return {
+    bodyText: c.body,
+    buttonText: c.button,
+    footerText: c.footer,
+    headerImageUrl: PLAY_BADGE_IMAGE_URL,
+    url: APP_PLAY_STORE_URL,
+  };
+}
+
+export const sendAppDownloadCard: ToolHandler = {
+  name: 'send_app_download_card',
+  description:
+    'Send the OFFICIAL Ethiopian Maids app download card: Google Play badge image + a tappable "Open Google Play" button. ' +
+    'ALWAYS use this when directing a customer to download the app or register — NEVER paste the Play Store URL as text (customers fear scam links). ' +
+    'After the card is sent, your text reply is ONE short sentence (e.g. "Tap the button above to get our official app 🌸") — do not repeat any link.',
+  parameters: {
+    type: 'object',
+    properties: {
+      language: {
+        type: 'string',
+        enum: ['en', 'ar', 'am'],
+        description: 'Card language matching the conversation: en (English), ar (Arabic), am (Amharic). Default en.',
+      },
+    },
+    required: [],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    if (!ctx.whatsapp) {
+      return { error: 'WhatsApp send credentials are not available in this run. Cannot send the card.' };
+    }
+    const language = (['en', 'ar', 'am'].includes(String(args.language)) ? String(args.language) : 'en') as AppCardLanguage;
+    const card = buildAppDownloadCard(language);
+    const to = sanitizePhoneForMeta(ctx.contactPhone);
+
+    let messageId = '';
+    let deliveredAs: 'card' | 'card_no_image' | 'text_fallback' = 'card';
+    const base = {
+      phoneNumberId: ctx.whatsapp.phoneNumberId,
+      accessToken: ctx.whatsapp.accessToken,
+      to,
+      bodyText: card.bodyText,
+      buttonText: card.buttonText,
+      url: card.url,
+      footerText: card.footerText,
+    };
+    try {
+      const r = await sendCtaUrlMessage({ ...base, headerImageUrl: card.headerImageUrl });
+      messageId = r.messageId;
+    } catch (e) {
+      // Most likely cause: Meta couldn't fetch the header image. Retry
+      // the same card without the image before degrading further.
+      console.warn('[send_app_download_card] cta_url with image failed, retrying without:',
+        e instanceof Error ? e.message : e);
+      try {
+        const r = await sendCtaUrlMessage(base);
+        messageId = r.messageId;
+        deliveredAs = 'card_no_image';
+      } catch (e2) {
+        // Interactive messages can be rejected (rare account/region gaps).
+        // Degrade to a plain text with the link rather than sending nothing.
+        console.warn('[send_app_download_card] cta_url failed, falling back to text:',
+          e2 instanceof Error ? e2.message : e2);
+        try {
+          const r = await sendTextMessage({
+            phoneNumberId: ctx.whatsapp.phoneNumberId,
+            accessToken: ctx.whatsapp.accessToken,
+            to,
+            text: `${card.bodyText}\n\n${card.url}\n\n${card.footerText}`,
+          });
+          messageId = r.messageId;
+          deliveredAs = 'text_fallback';
+        } catch (e3) {
+          return { error: `Could not deliver the app card: ${e3 instanceof Error ? e3.message : String(e3)}` };
+        }
+      }
+    }
+
+    const persistedText = `[Official app download card] ${card.bodyText}`;
+    await ctx.supabase.from('messages').insert({
+      conversation_id: ctx.conversationId,
+      sender_type: 'agent',
+      agent_kind: 'ai',
+      content_type: 'text',
+      content_text: persistedText,
+      message_id: messageId,
+      status: 'sent',
+    });
+    await ctx.supabase
+      .from('conversations')
+      .update({
+        last_message_text: '[App download card]',
+        last_message_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', ctx.conversationId);
+
+    return {
+      ok: true,
+      delivered_as: deliveredAs,
+      language,
       note:
-        'AI is now paused 24h on this conversation, tagged for human pickup. Send ONE final reply telling the customer a human agent will be with them shortly.',
+        deliveredAs === 'text_fallback'
+          ? 'Card rendering unavailable — a plain message with the official link was sent instead. Reply with ONE short reassuring sentence that this is our official Google Play page.'
+          : 'Official app card with Google Play button is now in the customer\'s chat. Reply with ONE short sentence pointing at it (e.g. "Tap the button above to get our official app 🌸"). Do NOT paste any link.',
     };
   },
 };
@@ -1037,6 +1263,7 @@ export const ETHIOPIAN_MAIDS_TOOLS: ToolHandler[] = [
   searchMaids,
   getMaidProfile,
   sendMaidCards,
+  sendAppDownloadCard,
   bookInterview,
   listJobs,
   getPricing,
