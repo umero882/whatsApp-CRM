@@ -19,6 +19,13 @@ export interface ToolContext {
   userId: string;
   conversationId: string;
   contactPhone: string;
+  /** Customer display name from the contacts table, if known. */
+  contactName: string | null;
+  /**
+   * Admin WhatsApp number (digits only, E.164 without +) that receives
+   * escalation forwards. Null disables the forward (pause+tag still happen).
+   */
+  escalationPhone: string | null;
   hasuraUrl: string | null;
   hasuraAdminSecret: string | null;
   /**
