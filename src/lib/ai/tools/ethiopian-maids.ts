@@ -13,6 +13,7 @@
  */
 
 import { makeHasuraClient, HasuraError } from './hasura';
+import { notifyAdminOfEscalation } from '../escalation-notify';
 import { sendCtaUrlMessage, sendImageMessage, sendTextMessage } from '@/lib/whatsapp/meta-api';
 import { sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
 import type { ToolHandler, ToolContext } from './registry';
@@ -506,12 +507,37 @@ export const escalateToHuman: ToolHandler = {
       console.warn('[ai/escalate] admin forward skipped: escalationPhone or whatsapp creds missing');
     }
 
+    // Push + in-app notification to the admin app via the maids-app's existing
+    // Hasura notifications → sendPush pipeline. Non-fatal and independent of
+    // the WhatsApp forward above, so the admin still gets alerted in-app even
+    // when Meta's 24h window blocks the WhatsApp message.
+    let appNotified = false;
+    if (ctx.hasuraUrl) {
+      try {
+        const hasura = makeHasuraClient(ctx.hasuraUrl, ctx.hasuraAdminSecret);
+        const r = await notifyAdminOfEscalation(hasura, {
+          escalationPhone: ctx.escalationPhone,
+          conversationId: ctx.conversationId,
+          customerName: ctx.contactName,
+          customerPhone: ctx.contactPhone,
+          reason,
+          issueSummary,
+          urgent,
+          adminUidOverride: process.env.ESCALATION_ADMIN_UID ?? null,
+        });
+        appNotified = r.notified;
+      } catch (e) {
+        console.warn('[ai/escalate] app push failed (non-fatal):', e instanceof Error ? e.message : e);
+      }
+    }
+
     return {
       ok: true,
       ai_paused_until: until,
       reason,
       urgent,
       admin_notified: adminNotified,
+      app_notified: appNotified,
       note: adminNotified
         ? 'Issue forwarded to the human admin on WhatsApp with the customer\'s number. Send ONE final reply telling the customer their issue has been passed to our team and someone will contact them on this number shortly.'
         : 'Conversation is tagged for human pickup (direct admin forward could not be delivered). Send ONE final reply telling the customer our team will review and contact them on this number — do NOT promise an immediate response.',
