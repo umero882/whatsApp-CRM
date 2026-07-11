@@ -61,4 +61,54 @@ describe('applyMaidProfileAutofill', () => {
     expect(r.reason).toBe('no_match');
     expect(setSpy).not.toHaveBeenCalled();
   });
+
+  it('uploads the passport image only when none is on file', async () => {
+    const setSpy = vi.fn(async (op: string) =>
+      op.includes('insert_maid_documents') ? { insert_maid_documents_one: { id: 'd1' } } : { update_maid_profiles: { affected_rows: 1 } });
+    (lookupMaidByPhone as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: 'match', passportOnFile: false,
+      maid: { maidId: 'm9', first_name: null, full_name: null, nationality: null, passport_expiry: null, date_of_birth: null },
+    });
+    const upload = vi.fn(async () => ({ data: { path: 'm9/passport.jpg' }, error: null }));
+    const createSignedUrl = vi.fn(async () => ({ data: { signedUrl: 'https://cdn/maid-documents/m9/passport.jpg?token=x' }, error: null }));
+    const client = {
+      from: vi.fn(() => ({ insert: async () => ({ error: null }),
+        select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { id: 't' } }) }) }) }),
+        upsert: async () => ({ error: null }) })),
+      storage: { from: vi.fn(() => ({ upload, createSignedUrl })) },
+    } as unknown as import('@supabase/supabase-js').SupabaseClient;
+
+    const r = await applyMaidProfileAutofill({
+      hasura: { query: setSpy } as unknown as HasuraClient, supabase: client, userId: 'u1', contactPhone: '251900000000',
+      conversationId: 'c1', contactId: 'ct1',
+      understanding: { kind: 'passport', summary: 's', confidence: 0.95, fields: { nationality: 'Ethiopian', passport_expiry: '2029-01-01' } },
+      imageBytes: { buffer: Buffer.from('img'), mimeType: 'image/jpeg' },
+    });
+    expect(upload).toHaveBeenCalled();
+    expect(r.documentUploaded).toBe(true);
+    expect(setSpy.mock.calls.some((c) => String(c[0]).includes('insert_maid_documents'))).toBe(true);
+  });
+
+  it('does NOT upload when a passport is already on file', async () => {
+    const setSpy = vi.fn(async () => ({ update_maid_profiles: { affected_rows: 1 } }));
+    (lookupMaidByPhone as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: 'match', passportOnFile: true,
+      maid: { maidId: 'm9', first_name: null, full_name: null, nationality: null, passport_expiry: null, date_of_birth: null },
+    });
+    const upload = vi.fn();
+    const client = {
+      from: vi.fn(() => ({ insert: async () => ({ error: null }),
+        select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { id: 't' } }) }) }) }),
+        upsert: async () => ({ error: null }) })),
+      storage: { from: vi.fn(() => ({ upload })) },
+    } as unknown as import('@supabase/supabase-js').SupabaseClient;
+    const r = await applyMaidProfileAutofill({
+      hasura: { query: setSpy } as unknown as HasuraClient, supabase: client, userId: 'u1', contactPhone: '251900000000',
+      conversationId: 'c1', contactId: 'ct1',
+      understanding: { kind: 'passport', summary: 's', confidence: 0.95, fields: { nationality: 'Ethiopian' } },
+      imageBytes: { buffer: Buffer.from('img'), mimeType: 'image/jpeg' },
+    });
+    expect(upload).not.toHaveBeenCalled();
+    expect(r.documentUploaded).toBe(false);
+  });
 });

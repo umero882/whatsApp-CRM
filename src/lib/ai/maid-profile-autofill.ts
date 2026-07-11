@@ -16,6 +16,12 @@ const UPDATE_GQL = /* GraphQL */ `
   }
 `;
 
+const INSERT_DOC_GQL = /* GraphQL */ `
+  mutation InsertMaidDoc($obj: maid_documents_insert_input!) {
+    insert_maid_documents_one(object: $obj) { id }
+  }
+`;
+
 // Only these fields may be auto-written. passport_number is deliberately absent.
 const SAFE_FIELDS = ['first_name', 'full_name', 'nationality', 'passport_expiry', 'date_of_birth'] as const;
 
@@ -89,5 +95,35 @@ export async function applyMaidProfileAutofill(input: {
     passportPendingVerify = true;
   }
 
-  return { matched: true, maidId: maid.maidId, filledFields, passportPendingVerify, documentUploaded: false };
+  let documentUploaded = false;
+  const wantUpload =
+    input.imageBytes && lookup.passportOnFile === false && (u.kind === 'passport' || u.kind === 'national_id');
+  if (wantUpload && input.imageBytes) {
+    try {
+      const ext = input.imageBytes.mimeType.includes('png') ? 'png' : 'jpg';
+      const path = `${maid.maidId}/passport_${Date.now()}.${ext}`;
+      const { error: upErr } = await input.supabase.storage
+        .from('maid-documents')
+        .upload(path, input.imageBytes.buffer, { contentType: input.imageBytes.mimeType, upsert: false });
+      if (!upErr) {
+        // Private bucket → long-lived SIGNED url (passport must not be world-readable).
+        // 10 years so the maids app has a durable link.
+        const { data: signed } = await input.supabase.storage
+          .from('maid-documents').createSignedUrl(path, 315_360_000);
+        if (signed?.signedUrl) {
+          await input.hasura.query(INSERT_DOC_GQL, {
+            obj: {
+              maid_id: maid.maidId, document_type: 'passport', document_url: signed.signedUrl,
+              expiry_date: u.fields?.passport_expiry ?? null, mime_type: input.imageBytes.mimeType, verified: false,
+            },
+          });
+          documentUploaded = true;
+        }
+      }
+    } catch (e) {
+      console.warn('[autofill] passport upload failed (non-fatal):', e instanceof Error ? e.message : e);
+    }
+  }
+
+  return { matched: true, maidId: maid.maidId, filledFields, passportPendingVerify, documentUploaded };
 }
