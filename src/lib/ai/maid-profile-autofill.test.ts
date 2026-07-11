@@ -29,11 +29,13 @@ describe('applyMaidProfileAutofill', () => {
       passportOnFile: true,
     });
     const { client, insert } = supa();
+    const messageCreatedAt = '2026-07-11T10:00:00.000Z';
     const r = await applyMaidProfileAutofill({
       hasura, supabase: client, userId: 'u1', contactPhone: '251973742567',
       conversationId: 'c1', contactId: 'ct1',
       understanding: passport({ first_name: 'Almaz', full_name: 'Almaz Tesfaye', nationality: 'Ethiopian',
         passport_number: 'EP1234567', passport_expiry: '2028-04-15', date_of_birth: '1996-02-03' }),
+      messageCreatedAt,
     });
     expect(r.matched).toBe(true);
     // full_name/nationality/expiry/dob were blank → filled; first_name already set → skipped
@@ -47,6 +49,17 @@ describe('applyMaidProfileAutofill', () => {
     expect(JSON.stringify(insert.mock.calls)).not.toContain('EP1234567');
     // A verification note was still posted (flag only, no number)
     expect(JSON.stringify(insert.mock.calls)).toMatch(/verify/i);
+    // The note's created_at must be stamped strictly BEFORE the triggering
+    // customer message, so the customer message stays the newest row and
+    // runAgent's race guard doesn't mistake this internal note for the last
+    // turn (which would silently skip the agent's WhatsApp reply).
+    const insertCalls = insert.mock.calls as unknown as Array<[Record<string, unknown>]>;
+    const noteCall = insertCalls.find((c) =>
+      c[0]?.content_text && String(c[0].content_text).match(/verify/i));
+    expect(noteCall).toBeDefined();
+    const noteArg = noteCall![0] as { created_at?: string };
+    expect(noteArg.created_at).toBeDefined();
+    expect(new Date(noteArg.created_at!).getTime()).toBeLessThan(new Date(messageCreatedAt).getTime());
   });
 
   it('returns matched=false and writes nothing when no maid matches', async () => {

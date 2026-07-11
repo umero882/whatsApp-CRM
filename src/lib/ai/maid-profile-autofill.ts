@@ -58,6 +58,7 @@ export async function applyMaidProfileAutofill(input: {
   hasura: HasuraClient; supabase: SupabaseClient; userId: string;
   contactPhone: string; conversationId: string; contactId: string;
   understanding: MediaUnderstanding; imageBytes?: { buffer: Buffer; mimeType: string };
+  messageCreatedAt?: string | null;
 }): Promise<AutofillResult> {
   const { understanding: u } = input;
   if (u.kind !== 'passport' && u.kind !== 'national_id') {
@@ -84,6 +85,15 @@ export async function applyMaidProfileAutofill(input: {
   // verification. The raw number is NEVER stored (not in the profile, not in
   // this note, not in logs) — the team reads it from the uploaded/existing
   // document, consistent with the app's encrypted-PII model.
+  //
+  // created_at is deliberately stamped to just BEFORE the triggering customer
+  // message (when known): this note is inserted with sender_type:'agent',
+  // and if it landed with a default now() timestamp it could sort AFTER the
+  // customer's message. runAgent's race guard treats the newest row as the
+  // arbiter of whose turn it is — if this internal note looked newest, the
+  // agent would see sender_type !== 'customer' and skip replying entirely,
+  // leaving the maid with no WhatsApp response. Keeping the customer message
+  // newest avoids that.
   let passportPendingVerify = false;
   if (u.kind === 'passport' || u.kind === 'national_id') {
     await tagContact(input.supabase, input.userId, input.contactId, 'passport_pending_verify', '#f59e0b');
@@ -91,6 +101,9 @@ export async function applyMaidProfileAutofill(input: {
       conversation_id: input.conversationId,
       sender_type: 'agent', agent_kind: 'ai', content_type: 'text', status: 'sent',
       content_text: '🔒 Passport/ID received — verify the number against the document (not auto-saved).',
+      ...(input.messageCreatedAt
+        ? { created_at: new Date(new Date(input.messageCreatedAt).getTime() - 1000).toISOString() }
+        : {}),
     });
     passportPendingVerify = true;
   }

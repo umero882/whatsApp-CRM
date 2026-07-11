@@ -71,4 +71,35 @@ describe('processInboundMedia', () => {
       }),
     );
   });
+
+  it('redacts a passport number that appears ONLY in the summary prose (fields has no passport_number)', async () => {
+    const passportNumber = 'EP1234567';
+    const expiry = '2028-04-15';
+    vi.mocked(understandMedia).mockResolvedValueOnce({
+      kind: 'passport',
+      // Deliberately NO passport_number in fields — the model echoed the
+      // number only in the free-text summary. The redaction must be
+      // deterministic (regex-based on the summary text itself), not gated
+      // on fields.passport_number being present.
+      fields: { nationality: 'Ethiopian', passport_expiry: expiry },
+      summary: `Passport for Almaz, no. ${passportNumber}, expires ${expiry}`,
+      confidence: 0.95,
+    });
+
+    await processInboundMedia({
+      userId: 'u1', conversationId: 'c1', contactId: 'ct1', contactPhone: '251900000000',
+      messageId: 'msg3', mediaId: 'md3', contentType: 'image', mimeType: 'image/jpeg', accessToken: 'tok',
+    });
+
+    const persistedCall = messagesUpdate.mock.calls.find((call) => call[0]?.ai_media_data !== undefined
+      && (call[0] as { ai_media_summary?: string }).ai_media_summary?.includes('Almaz'));
+    expect(persistedCall).toBeDefined();
+    const persisted = persistedCall![0] as { ai_media_data: unknown; ai_media_summary: string };
+
+    expect(persisted.ai_media_summary).not.toContain(passportNumber);
+    expect(JSON.stringify(persisted.ai_media_data)).not.toContain(passportNumber);
+    // The expiry date must survive the scrub (digit groups <= 4, dash-separated).
+    expect(persisted.ai_media_summary).toContain(expiry);
+    expect(JSON.stringify(persisted.ai_media_data)).toContain(expiry);
+  });
 });

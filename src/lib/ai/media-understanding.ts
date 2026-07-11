@@ -39,6 +39,7 @@ export async function transcribeAudio(
     method: 'POST',
     headers: { Authorization: `Bearer ${openaiKey}` },
     body: form,
+    signal: AbortSignal.timeout(20000),
   });
   if (!res.ok) throw new Error(`Whisper HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const json = (await res.json()) as { text?: string; language?: string };
@@ -75,6 +76,7 @@ async function analyzeImage(
         ],
       }],
     }),
+    signal: AbortSignal.timeout(20000),
   });
   if (!res.ok) throw new Error(`Vision HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
