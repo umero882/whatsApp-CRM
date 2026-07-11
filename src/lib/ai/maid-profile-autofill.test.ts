@@ -1,0 +1,64 @@
+import { describe, expect, it, vi } from 'vitest';
+vi.mock('./maid-lookup', () => ({ lookupMaidByPhone: vi.fn() }));
+import { lookupMaidByPhone } from './maid-lookup';
+import { applyMaidProfileAutofill } from './maid-profile-autofill';
+import type { HasuraClient } from './tools/hasura';
+
+const supa = () => {
+  const upsert = vi.fn(async () => ({ error: null }));
+  const insert = vi.fn(async () => ({ error: null }));
+  const client = {
+    from: vi.fn((t: string) => t === 'tags'
+      ? { select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { id: 'tag-1' } }) }) }) }) }
+      : { upsert, insert }),
+  } as unknown as import('@supabase/supabase-js').SupabaseClient;
+  return { client, upsert, insert };
+};
+
+const passport = (fields: Record<string, string>) => ({
+  kind: 'passport' as const, summary: 's', confidence: 0.95, fields });
+
+describe('applyMaidProfileAutofill', () => {
+  it('fills only blank safe fields and never writes passport_number', async () => {
+    const setSpy = vi.fn(async (_op: string, _vars?: Record<string, unknown>) => ({ maid_profiles: { affected_rows: 1 } }));
+    const hasura = { query: setSpy } as unknown as HasuraClient;
+    (lookupMaidByPhone as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: 'match',
+      maid: { maidId: 'm1', first_name: 'Almaz', full_name: null, nationality: null,
+        passport_expiry: null, date_of_birth: null },
+      passportOnFile: true,
+    });
+    const { client, insert } = supa();
+    const r = await applyMaidProfileAutofill({
+      hasura, supabase: client, userId: 'u1', contactPhone: '251973742567',
+      conversationId: 'c1', contactId: 'ct1',
+      understanding: passport({ first_name: 'Almaz', full_name: 'Almaz Tesfaye', nationality: 'Ethiopian',
+        passport_number: 'EP1234567', passport_expiry: '2028-04-15', date_of_birth: '1996-02-03' }),
+    });
+    expect(r.matched).toBe(true);
+    // full_name/nationality/expiry/dob were blank → filled; first_name already set → skipped
+    expect(r.filledFields.sort()).toEqual(['date_of_birth', 'full_name', 'nationality', 'passport_expiry']);
+    expect(r.passportPendingVerify).toBe(true);
+    // The GraphQL variables passed to update must NOT include passport_number
+    const varsArg = JSON.stringify(setSpy.mock.calls.find((c) => String(c[0]).includes('update_maid_profiles'))?.[1] ?? {});
+    expect(varsArg).not.toContain('passport_number');
+    expect(varsArg).not.toContain('EP1234567');
+    // INVARIANT: the raw number must not be stored anywhere — not in the internal note either
+    expect(JSON.stringify(insert.mock.calls)).not.toContain('EP1234567');
+    // A verification note was still posted (flag only, no number)
+    expect(JSON.stringify(insert.mock.calls)).toMatch(/verify/i);
+  });
+
+  it('returns matched=false and writes nothing when no maid matches', async () => {
+    (lookupMaidByPhone as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ status: 'none' });
+    const setSpy = vi.fn();
+    const { client } = supa();
+    const r = await applyMaidProfileAutofill({
+      hasura: { query: setSpy }, supabase: client, userId: 'u1', contactPhone: 'x',
+      conversationId: 'c1', contactId: 'ct1', understanding: passport({ nationality: 'Ethiopian' }),
+    });
+    expect(r.matched).toBe(false);
+    expect(r.reason).toBe('no_match');
+    expect(setSpy).not.toHaveBeenCalled();
+  });
+});
