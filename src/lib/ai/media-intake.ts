@@ -1,16 +1,33 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api';
-import { understandMedia } from './media-understanding';
+import { understandMedia, type MediaUnderstanding } from './media-understanding';
 import { applyMaidProfileAutofill } from './maid-profile-autofill';
 import { loadMediaConfig } from './config-load';
+
+// The raw passport/ID number must NEVER be persisted anywhere (hard invariant).
+// This produces a copy of `understanding` safe to write to messages.ai_media_data /
+// ai_media_summary: passport_number (and any future national-ID number field) is
+// dropped from `fields`, and its literal value is masked out of `summary`.
+function redactForPersistence(u: MediaUnderstanding): MediaUnderstanding {
+  const idNumber = u.fields?.passport_number;
+  if (!idNumber) return u;
+  const { passport_number: _omit, ...safeFields } = u.fields ?? {};
+  return {
+    ...u,
+    fields: safeFields,
+    summary: u.summary.split(idNumber).join('•••'),
+  };
+}
 
 export async function processInboundMedia(input: {
   userId: string; conversationId: string; contactId: string; contactPhone: string;
   messageId: string; mediaId: string;
   contentType: 'image' | 'audio' | 'document'; mimeType: string | null; accessToken: string;
 }): Promise<void> {
-  const sb = supabaseAdmin();
+  let sb: SupabaseClient | undefined;
   try {
+    sb = supabaseAdmin();
     // Idempotency guard.
     const { data: existing } = await sb.from('messages')
       .select('ai_media_processed').eq('id', input.messageId).maybeSingle();
@@ -27,10 +44,13 @@ export async function processInboundMedia(input: {
       accessToken: input.accessToken, openrouter: cfg.openrouter, openaiKey: cfg.openaiKey,
     });
 
+    // Never persist the raw passport/ID number — only a redacted copy reaches the DB.
+    const redacted = redactForPersistence(understanding);
+
     await sb.from('messages').update({
       ai_media_processed: true,
-      ai_media_summary: understanding.summary,
-      ai_media_data: understanding as unknown as Record<string, unknown>,
+      ai_media_summary: redacted.summary,
+      ai_media_data: redacted as unknown as Record<string, unknown>,
       // Surface voice transcript as the message text so detectLanguage + inbox work.
       ...(understanding.kind === 'voice' && understanding.transcript
         ? { content_text: understanding.transcript } : {}),
@@ -53,6 +73,8 @@ export async function processInboundMedia(input: {
     }
   } catch (e) {
     console.error('[media-intake] failed (non-fatal):', e instanceof Error ? e.message : e);
-    await sb.from('messages').update({ ai_media_processed: true }).eq('id', input.messageId).then(() => {}, () => {});
+    if (sb) {
+      await sb.from('messages').update({ ai_media_processed: true }).eq('id', input.messageId).then(() => {}, () => {});
+    }
   }
 }
