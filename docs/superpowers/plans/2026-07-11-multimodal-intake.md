@@ -567,12 +567,12 @@ describe('applyMaidProfileAutofill', () => {
         passport_expiry: null, date_of_birth: null },
       passportOnFile: true,
     });
-    const { client } = supa();
+    const { client, insert } = supa();
     const r = await applyMaidProfileAutofill({
       hasura, supabase: client, userId: 'u1', contactPhone: '251973742567',
       conversationId: 'c1', contactId: 'ct1',
       understanding: passport({ first_name: 'Almaz', full_name: 'Almaz Tesfaye', nationality: 'Ethiopian',
-        passport_number: 'EP1', passport_expiry: '2028-04-15', date_of_birth: '1996-02-03' }),
+        passport_number: 'EP1234567', passport_expiry: '2028-04-15', date_of_birth: '1996-02-03' }),
     });
     expect(r.matched).toBe(true);
     // full_name/nationality/expiry/dob were blank → filled; first_name already set → skipped
@@ -581,7 +581,11 @@ describe('applyMaidProfileAutofill', () => {
     // The GraphQL variables passed to update must NOT include passport_number
     const varsArg = JSON.stringify(setSpy.mock.calls.find((c) => String(c[0]).includes('update_maid_profiles'))?.[1] ?? {});
     expect(varsArg).not.toContain('passport_number');
-    expect(varsArg).not.toContain('EP1');
+    expect(varsArg).not.toContain('EP1234567');
+    // INVARIANT: the raw number must not be stored anywhere — not in the internal note either
+    expect(JSON.stringify(insert.mock.calls)).not.toContain('EP1234567');
+    // A verification note was still posted (flag only, no number)
+    expect(JSON.stringify(insert.mock.calls)).toMatch(/verify/i);
   });
 
   it('returns matched=false and writes nothing when no maid matches', async () => {
@@ -682,14 +686,17 @@ export async function applyMaidProfileAutofill(input: {
     await input.hasura.query(UPDATE_GQL, { id: maid.maidId, set });
   }
 
+  // An ID document was received for a matched maid → flag it for human
+  // verification. The raw number is NEVER stored (not in the profile, not in
+  // this note, not in logs) — the team reads it from the uploaded/existing
+  // document, consistent with the app's encrypted-PII model.
   let passportPendingVerify = false;
-  if (u.fields?.passport_number) {
+  if (u.kind === 'passport' || u.kind === 'national_id') {
     await tagContact(input.supabase, input.userId, input.contactId, 'passport_pending_verify', '#f59e0b');
-    // Internal note for the team — number captured for human verification, NOT written to the profile.
     await input.supabase.from('messages').insert({
       conversation_id: input.conversationId,
       sender_type: 'agent', agent_kind: 'ai', content_type: 'text', status: 'sent',
-      content_text: `🔒 Passport number to verify (not auto-saved): ${u.fields.passport_number}`,
+      content_text: '🔒 Passport/ID received — verify the number against the document (not auto-saved).',
     });
     passportPendingVerify = true;
   }
