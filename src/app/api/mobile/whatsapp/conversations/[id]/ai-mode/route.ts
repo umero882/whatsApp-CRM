@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/flows/admin-client";
-import { verifyMobileAdmin, isMobileAuthError } from "@/lib/mobile/auth";
+import { verifyMobileAdmin, mobileAuthErrorResponse } from "@/lib/mobile/auth";
 import { AI_MANUAL_SENTINEL } from "@/lib/mobile/serializers";
 
 /** POST /api/mobile/whatsapp/conversations/:id/ai-mode  { mode: 'ai' | 'manual' } */
@@ -12,7 +12,8 @@ export async function POST(
   try {
     admin = await verifyMobileAdmin(request);
   } catch (e) {
-    if (isMobileAuthError(e)) return NextResponse.json({ error: e.message }, { status: 401 });
+    const res = mobileAuthErrorResponse(e);
+    if (res) return res;
     throw e;
   }
 

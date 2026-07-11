@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/flows/admin-client";
-import { verifyMobileAdmin, isMobileAuthError } from "@/lib/mobile/auth";
+import { verifyMobileAdmin, mobileAuthErrorResponse } from "@/lib/mobile/auth";
 import { serializeConversation, type ConversationRow } from "@/lib/mobile/serializers";
 
 const DEFAULT_LIMIT = 50;
@@ -12,13 +12,14 @@ export async function GET(request: Request) {
   try {
     admin = await verifyMobileAdmin(request);
   } catch (e) {
-    if (isMobileAuthError(e)) return NextResponse.json({ error: e.message }, { status: 401 });
+    const res = mobileAuthErrorResponse(e);
+    if (res) return res;
     throw e;
   }
 
   const { searchParams } = new URL(request.url);
   const limit = clamp(Number(searchParams.get("limit")), DEFAULT_LIMIT, 1, MAX_LIMIT);
-  const offset = Math.max(Number(searchParams.get("offset")) || 0, 0);
+  const offset = Math.max(Math.floor(Number(searchParams.get("offset")) || 0), 0);
   // Strip characters that would break a PostgREST `.or` filter string.
   const search = (searchParams.get("search") ?? "").replace(/[,()*%\\]/g, "").trim();
 
@@ -27,11 +28,15 @@ export async function GET(request: Request) {
   // Optional search: prefilter matching contacts, then constrain by id.
   let contactIdFilter: string[] | null = null;
   if (search) {
-    const { data: contacts } = await db
+    const { data: contacts, error: contactsError } = await db
       .from("contacts")
       .select("id")
       .eq("user_id", admin.userId)
       .or(`phone.ilike.%${search}%,name.ilike.%${search}%`);
+    if (contactsError) {
+      console.error("[mobile/conversations] contact search failed:", contactsError.message);
+      return NextResponse.json({ error: "Failed to load conversations" }, { status: 500 });
+    }
     contactIdFilter = (contacts ?? []).map((c) => c.id as string);
     if (contactIdFilter.length === 0) {
       return NextResponse.json({ conversations: [], total: 0 });

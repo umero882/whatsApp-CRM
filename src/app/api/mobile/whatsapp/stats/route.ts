@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/flows/admin-client";
-import { verifyMobileAdmin, isMobileAuthError } from "@/lib/mobile/auth";
+import { verifyMobileAdmin, mobileAuthErrorResponse } from "@/lib/mobile/auth";
+
+// The business operates in the Gulf (admin is UAE, +971). Roll "today" over
+// at Gulf midnight (UTC+4), not the server's UTC midnight, so KPIs line up
+// with the local business day.
+const BUSINESS_TZ_OFFSET_MS = 4 * 60 * 60 * 1000;
 
 /** GET /api/mobile/whatsapp/stats — KPI counts for the tenant. */
 export async function GET(request: Request) {
@@ -8,15 +13,18 @@ export async function GET(request: Request) {
   try {
     admin = await verifyMobileAdmin(request);
   } catch (e) {
-    if (isMobileAuthError(e)) return NextResponse.json({ error: e.message }, { status: 401 });
+    const res = mobileAuthErrorResponse(e);
+    if (res) return res;
     throw e;
   }
 
   const db = supabaseAdmin();
-  const now = new Date();
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
-  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const now = Date.now();
+  // UTC instant of the most recent Gulf-local midnight.
+  const shifted = new Date(now + BUSINESS_TZ_OFFSET_MS);
+  shifted.setUTCHours(0, 0, 0, 0);
+  const startOfToday = new Date(shifted.getTime() - BUSINESS_TZ_OFFSET_MS);
+  const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
 
   // Count messages belonging to the tenant's conversations (inner join).
   const base = () =>
@@ -29,27 +37,29 @@ export async function GET(request: Request) {
 
   const runCount = async (build: (q: CountQuery) => CountQuery): Promise<number> => {
     const { count, error } = await build(base());
-    if (error) {
-      console.error("[mobile/stats] count failed:", error.message);
-      return 0;
-    }
+    if (error) throw new Error(`stats count failed: ${error.message}`);
     return count ?? 0;
   };
 
   const todayIso = startOfToday.toISOString();
-  const [today, week, total, inboundToday, outboundToday] = await Promise.all([
-    runCount((q) => q.gte("created_at", todayIso)),
-    runCount((q) => q.gte("created_at", weekAgo.toISOString())),
-    runCount((q) => q),
-    runCount((q) => q.gte("created_at", todayIso).eq("sender_type", "customer")),
-    runCount((q) => q.gte("created_at", todayIso).in("sender_type", ["agent", "bot"])),
-  ]);
+  try {
+    const [today, week, total, inboundToday, outboundToday] = await Promise.all([
+      runCount((q) => q.gte("created_at", todayIso)),
+      runCount((q) => q.gte("created_at", weekAgo.toISOString())),
+      runCount((q) => q),
+      runCount((q) => q.gte("created_at", todayIso).eq("sender_type", "customer")),
+      runCount((q) => q.gte("created_at", todayIso).in("sender_type", ["agent", "bot"])),
+    ]);
 
-  return NextResponse.json({
-    today,
-    week,
-    total,
-    inbound_today: inboundToday,
-    outbound_today: outboundToday,
-  });
+    return NextResponse.json({
+      today,
+      week,
+      total,
+      inbound_today: inboundToday,
+      outbound_today: outboundToday,
+    });
+  } catch (err) {
+    console.error("[mobile/stats]", err instanceof Error ? err.message : err);
+    return NextResponse.json({ error: "Failed to load stats" }, { status: 500 });
+  }
 }

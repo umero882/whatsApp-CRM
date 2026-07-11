@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { verifyMobileAdmin, isMobileAuthError } from "@/lib/mobile/auth";
+import { verifyMobileAdmin, mobileAuthErrorResponse } from "@/lib/mobile/auth";
 import { sendConversationMessage, SendError } from "@/lib/whatsapp/send-message";
+import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rate-limit";
 
 /** POST /api/mobile/whatsapp/conversations/:id/reply  { text } */
 export async function POST(
@@ -11,9 +12,15 @@ export async function POST(
   try {
     admin = await verifyMobileAdmin(request);
   } catch (e) {
-    if (isMobileAuthError(e)) return NextResponse.json({ error: e.message }, { status: 401 });
+    const res = mobileAuthErrorResponse(e);
+    if (res) return res;
     throw e;
   }
+
+  // Same budget as the web send path — this reaches the identical Meta send
+  // core, so it must be throttled too (cost/quota + spam protection).
+  const limit = checkRateLimit(`mobile-reply:${admin.userId}`, RATE_LIMITS.send);
+  if (!limit.success) return rateLimitResponse(limit);
 
   const { id } = await params;
   const body = await request.json().catch(() => ({}));
@@ -38,7 +45,10 @@ export async function POST(
     });
   } catch (err) {
     if (err instanceof SendError) {
-      return NextResponse.json({ error: err.message }, { status: err.status });
+      // Don't leak internal detail (e.g. DB error text) on server faults.
+      const message = err.status >= 500 ? "Failed to send reply" : err.message;
+      if (err.status >= 500) console.error("[mobile/reply] send fault:", err.message);
+      return NextResponse.json({ error: message }, { status: err.status });
     }
     console.error("[mobile/reply] send failed:", err);
     return NextResponse.json({ error: "Failed to send reply" }, { status: 500 });

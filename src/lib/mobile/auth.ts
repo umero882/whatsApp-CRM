@@ -9,6 +9,7 @@
  *      never a client-supplied id.
  */
 
+import { NextResponse } from "next/server";
 import type { JWTVerifyGetKey } from "jose";
 import { supabaseAdmin } from "@/lib/flows/admin-client";
 import { verifyFirebaseIdToken } from "./firebase-verify";
@@ -21,11 +22,42 @@ export class MobileAuthError extends Error {
   }
 }
 
+/**
+ * Server-side/config failure (owner lookup errored or ambiguous) — the token
+ * was fine. Deliberately NOT a MobileAuthError so routes surface a retryable
+ * 5xx instead of a 401, which mobile clients read as "session dead → log out".
+ */
+export class MobileOwnerError extends Error {
+  readonly status = 503;
+  constructor(message = "WhatsApp owner unavailable") {
+    super(message);
+    this.name = "MobileOwnerError";
+  }
+}
+
 export function isMobileAuthError(e: unknown): e is MobileAuthError {
   return (
     e instanceof MobileAuthError ||
     (typeof e === "object" && e !== null && (e as { name?: string }).name === "MobileAuthError")
   );
+}
+
+/**
+ * Map a `verifyMobileAdmin` rejection to a response: 401 for a bad token,
+ * 503 for a backend/owner-config problem. Returns null for anything else so
+ * the caller rethrows (→ 500). Keeps all mobile routes' catch blocks uniform.
+ */
+export function mobileAuthErrorResponse(e: unknown): NextResponse | null {
+  if (isMobileAuthError(e)) {
+    return NextResponse.json({ error: e.message }, { status: 401 });
+  }
+  if (e instanceof MobileOwnerError) {
+    return NextResponse.json(
+      { error: "WhatsApp backend temporarily unavailable" },
+      { status: 503 },
+    );
+  }
+  return null;
 }
 
 let _ownerId: string | null = null;
@@ -51,9 +83,9 @@ async function resolveOwnerUserId(): Promise<string> {
     .eq("status", "connected")
     .limit(2);
 
-  if (error) throw new MobileAuthError("owner lookup failed");
+  if (error) throw new MobileOwnerError("owner lookup failed");
   if (!data || data.length !== 1) {
-    throw new MobileAuthError("no unambiguous WhatsApp owner");
+    throw new MobileOwnerError("no unambiguous WhatsApp owner");
   }
   _ownerId = data[0].user_id as string;
   return _ownerId;

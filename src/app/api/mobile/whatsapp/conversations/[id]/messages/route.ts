@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/flows/admin-client";
-import { verifyMobileAdmin, isMobileAuthError } from "@/lib/mobile/auth";
+import { verifyMobileAdmin, mobileAuthErrorResponse } from "@/lib/mobile/auth";
 import { serializeMessage, type MessageRow } from "@/lib/mobile/serializers";
 
 const DEFAULT_LIMIT = 100;
@@ -15,7 +15,8 @@ export async function GET(
   try {
     admin = await verifyMobileAdmin(request);
   } catch (e) {
-    if (isMobileAuthError(e)) return NextResponse.json({ error: e.message }, { status: 401 });
+    const res = mobileAuthErrorResponse(e);
+    if (res) return res;
     throw e;
   }
 
@@ -46,13 +47,16 @@ export async function GET(
     return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
   }
 
+  // Fetch the NEWEST `limit` messages (descending), then reverse to
+  // ascending for display. Ordering ascending + limit would return the
+  // oldest N and never show the customer's latest message on a long thread.
   const { data, error } = await db
     .from("messages")
     .select(
       "id,sender_type,agent_kind,content_text,content_type,media_url,ai_media_summary,status,created_at",
     )
     .eq("conversation_id", id)
-    .order("created_at", { ascending: true })
+    .order("created_at", { ascending: false })
     .limit(limit);
 
   if (error) {
@@ -60,7 +64,8 @@ export async function GET(
     return NextResponse.json({ error: "Failed to load messages" }, { status: 500 });
   }
 
+  const ascending = (data ?? []).slice().reverse();
   return NextResponse.json({
-    messages: (data ?? []).map((r) => serializeMessage(r as unknown as MessageRow)),
+    messages: ascending.map((r) => serializeMessage(r as unknown as MessageRow)),
   });
 }

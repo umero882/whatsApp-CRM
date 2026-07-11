@@ -14,6 +14,7 @@ vi.mock("@/lib/mobile/auth", async (importOriginal) => {
 import { POST } from "./route";
 import { verifyMobileAdmin } from "@/lib/mobile/auth";
 import { SendError } from "@/lib/whatsapp/send-message";
+import { __resetRateLimitForTests } from "@/lib/rate-limit";
 
 const params = Promise.resolve({ id: "c1" });
 const req = (body: unknown) =>
@@ -25,6 +26,7 @@ const req = (body: unknown) =>
 
 beforeEach(() => {
   h.send.mockReset();
+  __resetRateLimitForTests();
   vi.mocked(verifyMobileAdmin).mockReset();
   vi.mocked(verifyMobileAdmin).mockResolvedValue({ userId: "owner-1", firebaseUid: "u" });
 });
@@ -57,5 +59,26 @@ describe("POST /api/mobile/whatsapp/conversations/:id/reply", () => {
     h.send.mockRejectedValue(new SendError("Conversation not found", 404));
     const res = await POST(req({ text: "hi" }), { params });
     expect(res.status).toBe(404);
+  });
+
+  it("hides internal detail on a >=500 SendError", async () => {
+    h.send.mockRejectedValue(
+      new SendError("Message sent to Meta but failed to save to DB: pg boom", 500),
+    );
+    const res = await POST(req({ text: "hi" }), { params });
+    const body = await res.json();
+    expect(res.status).toBe(500);
+    expect(body.error).toBe("Failed to send reply");
+    expect(body.error).not.toContain("pg boom");
+  });
+
+  it("429s when the per-user send budget is exhausted", async () => {
+    h.send.mockResolvedValue({ crmMessageId: "crm-1", waMessageId: "wa-1" });
+    // RATE_LIMITS.send = 60/min; the 61st call in the window is throttled.
+    let last: Response | undefined;
+    for (let i = 0; i < 61; i++) {
+      last = await POST(req({ text: "hi" }), { params });
+    }
+    expect(last?.status).toBe(429);
   });
 });

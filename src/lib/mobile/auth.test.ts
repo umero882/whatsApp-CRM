@@ -22,6 +22,7 @@ vi.mock("@/lib/flows/admin-client", () => ({
 
 import {
   MobileAuthError,
+  MobileOwnerError,
   verifyMobileAdmin,
   isMobileAuthError,
   _resetMobileAuthCacheForTests,
@@ -186,7 +187,7 @@ describe("verifyMobileAdmin", () => {
     expect(res.userId).toBe("owner-db");
   });
 
-  it("throws when the owner is ambiguous (multiple configs)", async () => {
+  it("throws a MobileOwnerError (not a 401 auth error) when the owner is ambiguous", async () => {
     fromMock.mockReturnValue({
       select: () => ({
         eq: () => ({
@@ -195,9 +196,12 @@ describe("verifyMobileAdmin", () => {
         }),
       }),
     });
-    await expect(verifyMobileAdmin(reqWith(await signToken()), { jwks })).rejects.toBeInstanceOf(
-      MobileAuthError,
-    );
+    const err = await verifyMobileAdmin(reqWith(await signToken()), { jwks }).catch((e) => e);
+    // A backend/config problem must NOT read as an auth failure (401) — that
+    // would log a valid admin out. It surfaces as a retryable 503.
+    expect(err).toBeInstanceOf(MobileOwnerError);
+    expect(isMobileAuthError(err)).toBe(false);
+    expect(err.status).toBe(503);
   });
 
   it("rejects a missing Authorization header", async () => {

@@ -71,6 +71,11 @@ export async function verifyFirebaseIdToken(
   const { payload } = await jwtVerify(token, jwks, {
     issuer: ISSUER,
     audience: FIREBASE_PROJECT_ID,
+    // Firebase ID tokens are RS256 — pin it so a future JWKS change can't
+    // downgrade us to a weaker/asymmetric alg. Small tolerance avoids
+    // rejecting a token at the exact expiry second on clock skew.
+    algorithms: ["RS256"],
+    clockTolerance: 5,
   });
   const p = payload as FirebasePayload;
   if (!p.sub) throw new Error("token missing sub");

@@ -56,21 +56,12 @@ describe("GET /api/mobile/whatsapp/conversations/:id/messages", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns serialized thread messages", async () => {
+  it("returns thread messages in ascending display order (newest fetched first, reversed)", async () => {
+    // The route queries newest-first (descending) then reverses. Mirror that:
+    // the mock returns descending, the response must be ascending.
     h.state.messages = {
       error: null,
       data: [
-        {
-          id: "m1",
-          sender_type: "customer",
-          agent_kind: null,
-          content_text: "hi",
-          content_type: "text",
-          media_url: null,
-          ai_media_summary: null,
-          status: "read",
-          created_at: "2026-07-11T00:00:00Z",
-        },
         {
           id: "m2",
           sender_type: "agent",
@@ -82,11 +73,23 @@ describe("GET /api/mobile/whatsapp/conversations/:id/messages", () => {
           status: "sent",
           created_at: "2026-07-11T00:01:00Z",
         },
+        {
+          id: "m1",
+          sender_type: "customer",
+          agent_kind: null,
+          content_text: "hi",
+          content_type: "text",
+          media_url: null,
+          ai_media_summary: null,
+          status: "read",
+          created_at: "2026-07-11T00:00:00Z",
+        },
       ],
     };
     const res = await GET(req(), { params });
     const body = await res.json();
     expect(res.status).toBe(200);
+    expect(body.messages.map((m: { id: string }) => m.id)).toEqual(["m1", "m2"]);
     expect(body.messages.map((m: { role: string }) => m.role)).toEqual(["user", "assistant"]);
   });
 });
