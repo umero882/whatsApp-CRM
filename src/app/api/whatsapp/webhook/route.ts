@@ -7,6 +7,7 @@ import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { runAgent } from '@/lib/ai/agent'
+import { processInboundMedia } from '@/lib/ai/media-intake'
 
 // Lazy-initialized to avoid build-time crash when env vars are missing
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -481,7 +482,7 @@ async function processMessage(
   }
 
   // Parse message content based on type
-  const { contentText, mediaUrl, mediaType, interactiveReplyId } =
+  const { contentText, mediaUrl, mediaType, interactiveReplyId, mediaMetaId } =
     await parseMessageContent(message, accessToken)
 
   // Resolve swipe-reply context if present. A missing parent is fine —
@@ -504,10 +505,9 @@ async function processMessage(
   // (see supabase/migrations/001_initial_schema.sql):
   //   conversation_id, sender_type, content_type, content_text,
   //   media_url, template_name, message_id, status, created_at
-  // `mediaType` is intentionally unused — the schema has no media_type
-  // column; the MIME type is only used to construct the proxy URL during
-  // parseMessageContent. Silence the unused-var warning:
-  void mediaType
+  // `mediaType` has no matching messages column — the schema has no
+  // media_type column. It's still used below as the `mimeType` passed to
+  // processInboundMedia so multimodal intake knows how to decode the file.
 
   // The messages.content_type CHECK constraint (widened in migration 010
   // to add 'interactive' for button/list taps) allows:
@@ -535,7 +535,7 @@ async function processMessage(
     .eq('sender_type', 'customer')
   const isFirstInboundMessage = (priorCustomerMsgCount ?? 0) === 0
 
-  const { error: msgError } = await supabaseAdmin().from('messages').insert({
+  const { data: insertedMsg, error: msgError } = await supabaseAdmin().from('messages').insert({
     conversation_id: conversation.id,
     sender_type: 'customer',
     content_type: contentType,
@@ -549,7 +549,7 @@ async function processMessage(
     // the column; null for every other content_type so existing inserts
     // behave identically.
     interactive_reply_id: interactiveReplyId,
-  })
+  }).select('id').single()
 
   if (msgError) {
     console.error('Error inserting message:', msgError)
@@ -653,6 +653,30 @@ async function processMessage(
     }).catch((err) => console.error('[automations] dispatch failed:', err))
   }
 
+  // Multimodal intake: understand inbound media (passport/voice/doc) and
+  // auto-fill the maid profile BEFORE the agent reasons over history.
+  if (
+    !flowConsumed && insertedMsg?.id &&
+    (contentType === 'image' || contentType === 'audio' || contentType === 'document') &&
+    mediaMetaId
+  ) {
+    try {
+      await processInboundMedia({
+        userId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+        contactPhone: contactRecord.phone,
+        messageId: insertedMsg.id,
+        mediaId: mediaMetaId,
+        contentType,
+        mimeType: mediaType,
+        accessToken,
+      })
+    } catch (err) {
+      console.error('[webhook] media intake failed:', err)
+    }
+  }
+
   // ============================================================
   // AI Reply Agent — fire-and-forget.
   //
@@ -696,6 +720,14 @@ async function parseMessageContent(
    * tap with the right affordance. Null for everything else.
    */
   interactiveReplyId: string | null
+  /**
+   * Raw Meta media id (message.image?.id / message.audio?.id /
+   * message.document?.id) — before it gets proxied into our internal
+   * `/api/whatsapp/media/:id` URL. Consumed by processInboundMedia so
+   * it can re-fetch the original bytes from Meta. Null for non-media
+   * (and video/sticker, which aren't in-scope for multimodal intake).
+   */
+  mediaMetaId: string | null
 }> {
   // getMediaUrl signature is (mediaId, accessToken) — earlier code had
   // the args swapped, so every verification hit an invalid Meta URL and
@@ -723,6 +755,7 @@ async function parseMessageContent(
     mediaUrl: null,
     mediaType: null,
     interactiveReplyId: null,
+    mediaMetaId: null,
   }
 
   switch (message.type) {
@@ -736,6 +769,7 @@ async function parseMessageContent(
           contentText: message.image.caption || null,
           mediaUrl: await verifyAndBuildUrl(message.image.id),
           mediaType: message.image.mime_type,
+          mediaMetaId: message.image.id,
         }
       }
       return empty
@@ -759,6 +793,7 @@ async function parseMessageContent(
             message.document.caption || message.document.filename || null,
           mediaUrl: await verifyAndBuildUrl(message.document.id),
           mediaType: message.document.mime_type,
+          mediaMetaId: message.document.id,
         }
       }
       return empty
@@ -769,6 +804,7 @@ async function parseMessageContent(
           ...empty,
           mediaUrl: await verifyAndBuildUrl(message.audio.id),
           mediaType: message.audio.mime_type,
+          mediaMetaId: message.audio.id,
         }
       }
       return empty
