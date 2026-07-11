@@ -741,12 +741,12 @@ it('uploads the passport image only when none is on file', async () => {
     maid: { maidId: 'm9', first_name: null, full_name: null, nationality: null, passport_expiry: null, date_of_birth: null },
   });
   const upload = vi.fn(async () => ({ data: { path: 'm9/passport.jpg' }, error: null }));
-  const getPublicUrl = vi.fn(() => ({ data: { publicUrl: 'https://cdn/maid-documents/m9/passport.jpg' } }));
+  const createSignedUrl = vi.fn(async () => ({ data: { signedUrl: 'https://cdn/maid-documents/m9/passport.jpg?token=x' }, error: null }));
   const client = {
     from: vi.fn(() => ({ insert: async () => ({ error: null }),
       select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { id: 't' } }) }) }) }),
       upsert: async () => ({ error: null }) })),
-    storage: { from: vi.fn(() => ({ upload, getPublicUrl })) },
+    storage: { from: vi.fn(() => ({ upload, createSignedUrl })) },
   } as unknown as import('@supabase/supabase-js').SupabaseClient;
 
   const r = await applyMaidProfileAutofill({
@@ -815,14 +815,19 @@ if (wantUpload && input.imageBytes) {
       .from('maid-documents')
       .upload(path, input.imageBytes.buffer, { contentType: input.imageBytes.mimeType, upsert: false });
     if (!upErr) {
-      const { data: pub } = input.supabase.storage.from('maid-documents').getPublicUrl(path);
-      await input.hasura.query(INSERT_DOC_GQL, {
-        obj: {
-          maid_id: maid.maidId, document_type: 'passport', document_url: pub.publicUrl,
-          expiry_date: u.fields?.passport_expiry ?? null, mime_type: input.imageBytes.mimeType, verified: false,
-        },
-      });
-      documentUploaded = true;
+      // Private bucket → long-lived SIGNED url (passport must not be world-readable).
+      // 10 years so the maids app has a durable link.
+      const { data: signed } = await input.supabase.storage
+        .from('maid-documents').createSignedUrl(path, 315_360_000);
+      if (signed?.signedUrl) {
+        await input.hasura.query(INSERT_DOC_GQL, {
+          obj: {
+            maid_id: maid.maidId, document_type: 'passport', document_url: signed.signedUrl,
+            expiry_date: u.fields?.passport_expiry ?? null, mime_type: input.imageBytes.mimeType, verified: false,
+          },
+        });
+        documentUploaded = true;
+      }
     }
   } catch (e) {
     console.warn('[autofill] passport upload failed (non-fatal):', e instanceof Error ? e.message : e);
