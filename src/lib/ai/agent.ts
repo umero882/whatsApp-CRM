@@ -36,6 +36,8 @@ import {
 } from './tools/ethiopian-maids';
 import type { ToolHandler, ToolContext } from './tools/registry';
 import { findTool, toolsToSpecs } from './tools/registry';
+import { makeHasuraClient } from './tools/hasura';
+import { lookupMaidByPhone } from './maid-lookup';
 
 /**
  * Stage names match the documented playbook in the Habiba preset
@@ -107,6 +109,7 @@ interface HistoryRow {
   sender_type: 'customer' | 'agent';
   content_type: string;
   content_text: string | null;
+  ai_media_summary?: string | null;
   agent_kind?: 'human' | 'ai' | null;
   created_at: string;
 }
@@ -180,7 +183,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   // ─── Load history (last 20) ─────────────────────────────────────────
   const { data: histRaw, error: histErr } = await sb
     .from('messages')
-    .select('sender_type, content_type, content_text, agent_kind, created_at')
+    .select('sender_type, content_type, content_text, ai_media_summary, agent_kind, created_at')
     .eq('conversation_id', conv.id)
     .order('created_at', { ascending: false })
     .limit(20);
@@ -208,6 +211,21 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   const hasuraAdminSecret = agent.encrypted_hasura_admin_secret
     ? decrypt(agent.encrypted_hasura_admin_secret)
     : null;
+
+  // Passport-on-file check — job seekers only. Non-fatal: a lookup
+  // failure just means we don't have the signal this turn, not a
+  // reason to fail the whole reply.
+  let maidPassportOnFile: boolean | null = null;
+  if (intent === 'job_seeker' && agent.hasura_url) {
+    try {
+      const lookup = await lookupMaidByPhone(
+        makeHasuraClient(agent.hasura_url, hasuraAdminSecret), contact.phone);
+      if (lookup.status === 'match') maidPassportOnFile = lookup.passportOnFile ?? false;
+    } catch {
+      /* non-fatal */
+    }
+  }
+
   const provider = makeProvider(provRow.provider, {
     model: provRow.model,
     apiKey,
@@ -242,7 +260,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
 
   // ─── Compose system prompt ──────────────────────────────────────────
   const persona = (agent.system_prompt ?? '').trim() || defaultPersona(agent.business_name);
-  const runtimeBlock = buildRuntimeBlock(stage, intent, language, customerContext, stageTools, allowTools);
+  const runtimeBlock = buildRuntimeBlock(stage, intent, language, customerContext, stageTools, allowTools, maidPassportOnFile);
   const directive = OPERATING_DIRECTIVE;
   // APP_INFO_BLOCK is injected server-side (not only in the editable
   // persona) so the app-funnel policy survives any custom prompt.
@@ -610,6 +628,7 @@ function buildRuntimeBlock(
   ctx: CustomerContext,
   activeTools: ToolHandler[],
   toolsAllowedThisTurn: boolean,
+  maidPassportOnFile: boolean | null,
 ): string {
   const toolList = activeTools.map((t) => `${t.name} — ${t.description.split('.')[0]}.`).join('\n  • ');
   const stageGuide = STAGE_GUIDANCE[stage];
@@ -622,6 +641,9 @@ function buildRuntimeBlock(
     : (activeTools.length > 0
       ? `Most tools are DISABLED for this turn (stage ${stage}). ONLY these may be called:\n  • ${toolList}\nAnything else: reply in plain text.`
       : `Tools are DISABLED for this turn (stage ${stage}). Reply in plain text only — do not attempt to call tools.`);
+  const passportLine = maidPassportOnFile === false
+    ? '\nPASSPORT: This registered maid has NO passport document on file. If the conversation reaches document collection, ask ONCE for a clear photo of her passport. If she already sent it this session, do not ask again. When maidPassportOnFile is true or null, NEVER ask for the passport.\n'
+    : '';
   return `═══ RUNTIME CONTEXT ═══
 STAGE: ${stage}
 INTENT: ${intent}
@@ -634,7 +656,7 @@ ${intentGuide}
 
 STAGE GUIDANCE:
 ${stageGuide}
-
+${passportLine}
 ${toolsLine}
 ═══════════════════════`;
 }
@@ -779,8 +801,12 @@ function stageHoldingReply(stage: Stage, lang: Lang): string {
 // Helpers
 // ════════════════════════════════════════════════════════════════════
 
-function stringifyHistoryMessage(m: HistoryRow): string {
+export function stringifyHistoryMessage(m: HistoryRow): string {
   const text = (m.content_text ?? '').trim();
+  if (m.ai_media_summary && m.ai_media_summary.trim()) {
+    const label = m.content_type === 'image' ? 'photo' : m.content_type === 'audio' ? 'voice note' : m.content_type;
+    return `[${label}] ${m.ai_media_summary.trim()}`;
+  }
   if (text) return text;
   return `[${m.content_type ?? 'message'}]`;
 }
