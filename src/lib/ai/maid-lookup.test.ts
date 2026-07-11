@@ -43,4 +43,21 @@ describe('lookupMaidByPhone', () => {
     const r = await lookupMaidByPhone(h, '251973742567');
     expect(r.status).toBe('multiple');
   });
+
+  it('queries maid_documents with a String maid_id, never uuid (live schema: maid_id is a Firebase UID)', async () => {
+    const queryFn = vi.fn(async (op: string) =>
+      op.includes('maid_documents') ? { maid_documents: [] } : {
+        maid_profiles: [{ id: 'PQuWzF5mCaXAIaVOWXFlq0rudzu2', first_name: null, full_name: null,
+          nationality: null, passport_expiry: null, date_of_birth: null,
+          phone_country_code: '251', phone_number: '973742567' }],
+      });
+    const h = { query: queryFn } as unknown as HasuraClient;
+    await lookupMaidByPhone(h, '251973742567');
+
+    const docsCall = queryFn.mock.calls.find(([op]) => (op as string).includes('maid_documents'));
+    expect(docsCall).toBeDefined();
+    const [docsOp] = docsCall!;
+    expect(docsOp as string).toContain('$maidId: String!');
+    expect((docsOp as string).toLowerCase()).not.toContain('uuid');
+  });
 });

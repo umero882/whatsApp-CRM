@@ -25,8 +25,9 @@ const CANDIDATES_GQL = /* GraphQL */ `
     }
   }
 `;
+// maid_documents.maid_id is a Firebase UID stored as GraphQL String, not uuid.
 const DOCS_GQL = /* GraphQL */ `
-  query MaidPassportDocs($maidId: uuid!, $types: [String!]!) {
+  query MaidPassportDocs($maidId: String!, $types: [String!]!) {
     maid_documents(where: { maid_id: { _eq: $maidId }, document_type: { _in: $types } }, limit: 1) { id }
   }
 `;
