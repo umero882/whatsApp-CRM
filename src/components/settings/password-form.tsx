@@ -7,7 +7,7 @@ import { Loader2, KeyRound } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import {
   Card,
@@ -99,9 +99,8 @@ export function PasswordForm() {
             <Label htmlFor="current-password" className="text-slate-200">
               Current password
             </Label>
-            <Input
+            <PasswordInput
               id="current-password"
-              type="password"
               value={current}
               onChange={(e) => setCurrent(e.target.value)}
               autoComplete="current-password"
@@ -115,9 +114,8 @@ export function PasswordForm() {
               <Label htmlFor="new-password" className="text-slate-200">
                 New password
               </Label>
-              <Input
+              <PasswordInput
                 id="new-password"
-                type="password"
                 value={next}
                 onChange={(e) => setNext(e.target.value)}
                 autoComplete="new-password"
@@ -130,9 +128,8 @@ export function PasswordForm() {
               <Label htmlFor="confirm-password" className="text-slate-200">
                 Confirm new password
               </Label>
-              <Input
+              <PasswordInput
                 id="confirm-password"
-                type="password"
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
                 autoComplete="new-password"
