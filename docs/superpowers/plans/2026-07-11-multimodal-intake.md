@@ -622,8 +622,10 @@ export interface AutofillResult {
   passportPendingVerify: boolean; documentUploaded: boolean; reason?: string;
 }
 
+// NOTE: maid_profiles.id is a Firebase UID stored as GraphQL `String`, NOT uuid
+// (verified against live Hasura). Use String! for every maid-id variable.
 const UPDATE_GQL = /* GraphQL */ `
-  mutation FillMaid($id: uuid!, $set: maid_profiles_set_input!) {
+  mutation FillMaid($id: String!, $set: maid_profiles_set_input!) {
     update_maid_profiles(where: { id: { _eq: $id } }, _set: $set) { affected_rows }
   }
 `;
