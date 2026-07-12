@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   APP_PLAY_STORE_URL,
   buildAppDownloadCard,
+  buildChoiceMessage,
   buildEscalationForward,
   saveMatchAlert,
 } from './ethiopian-maids';
@@ -150,5 +151,39 @@ describe('saveMatchAlert.handler', () => {
       language: 'en',
       criteria: { country: 'UAE', city: 'Dubai' },
     });
+  });
+});
+
+describe('buildChoiceMessage', () => {
+  it('renders 2-3 options as buttons with 20-char titles and stable ids', () => {
+    const c = buildChoiceMessage('Live-in or live-out?', ['Live-in', 'Live-out']);
+    expect(c.kind).toBe('buttons');
+    expect(c.options).toEqual([
+      { id: 'opt_1', title: 'Live-in' },
+      { id: 'opt_2', title: 'Live-out' },
+    ]);
+    expect(c.buttonLabel).toBeUndefined();
+  });
+
+  it('renders 4+ options as a list with a default button label', () => {
+    const c = buildChoiceMessage('Which emirate?', ['Dubai', 'Abu Dhabi', 'Sharjah', 'Ajman', 'Fujairah']);
+    expect(c.kind).toBe('list');
+    expect(c.options).toHaveLength(5);
+    expect(c.buttonLabel).toBe('Choose an option');
+  });
+
+  it('truncates long titles to the per-kind Meta limit', () => {
+    const long = 'This option title is way too long for Meta';
+    const buttons = buildChoiceMessage('Q?', [long, 'B']);
+    expect(buttons.options[0].title).toHaveLength(20);
+    const list = buildChoiceMessage('Q?', [long, 'B', 'C', 'D']);
+    expect(list.options[0].title).toHaveLength(24);
+  });
+
+  it('dedupes, drops empties, caps at 10, and validates inputs', () => {
+    const c = buildChoiceMessage('Q?', ['A', 'A', ' ', ...'BCDEFGHIJKLM'.split('')]);
+    expect(c.options).toHaveLength(10);
+    expect(() => buildChoiceMessage('', ['A'])).toThrow(/body_text/);
+    expect(() => buildChoiceMessage('Q?', ['', '  '])).toThrow(/options/);
   });
 });

@@ -15,7 +15,14 @@
 import { makeHasuraClient, HasuraError } from './hasura';
 import { normalizeAlertCriteria, type AlertLanguage, type MatchSide } from '../matching';
 import { notifyAdminOfEscalation } from '../escalation-notify';
-import { sendCtaUrlMessage, sendImageMessage, sendTextMessage } from '@/lib/whatsapp/meta-api';
+import {
+  INTERACTIVE_LIMITS,
+  sendCtaUrlMessage,
+  sendImageMessage,
+  sendInteractiveButtons,
+  sendInteractiveList,
+  sendTextMessage,
+} from '@/lib/whatsapp/meta-api';
 import { sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
 import type { ToolHandler, ToolContext } from './registry';
 
@@ -144,7 +151,7 @@ export const searchMaids: ToolHandler = {
         maids,
         note:
           maids.length === 0
-            ? 'No matching candidates with these criteria. Offer TWO options: (1) broaden the search (drop salary cap, drop language/skill filter), or (2) a match alert — if the customer agrees, call save_match_alert with side="sponsor" and these criteria so we message them the moment a matching candidate becomes available.'
+            ? 'No matching candidates with these criteria. Call reply_with_choices with a short apology-question and options like ["Alert me when found","Widen the search"]. If they tap the alert option, call save_match_alert with side="sponsor" and these criteria so we message them the moment a matching candidate becomes available.'
             : 'Recommend at most 2-3 of these candidates. Mention first name, nationality/country, experience years, key skills, and the salary range. If a photo_url exists, mention "I can share a photo if you\'d like".',
       };
     } catch (e) {
@@ -311,7 +318,7 @@ export const listJobs: ToolHandler = {
         count: jobs.length,
         jobs,
         note: jobs.length === 0
-          ? 'No active jobs match these criteria. Offer TWO options: (1) broaden the search (different city/country, drop experience filter), or (2) a job alert — if the customer agrees, call save_match_alert with side="maid" and these criteria so we message her the moment a matching job opens.'
+          ? 'No active jobs match these criteria. Call reply_with_choices with a short apology-question and options like ["Alert me about jobs","Search other cities"]. If she taps the alert option, call save_match_alert with side="maid" and these criteria so we message her the moment a matching job opens.'
           : 'Present 1-3 of these jobs to the customer with: title, city/country, salary range with currency, live-in or live-out, key required skills. Ask which one she\'d like to apply for or want more detail on.',
       };
     } catch (e) {
@@ -1287,6 +1294,178 @@ export const bookInterview: ToolHandler = {
 };
 
 // ----------------------------------------------------------------
+// reply_with_choices — ask a fixed-choice question as TAPPABLE options
+// instead of making the customer type. ≤3 options render as Meta reply
+// buttons; 4-10 render as a tap-to-expand list. The webhook already
+// converts the customer's tap back into a normal text message (the
+// option title), so the agent's next turn reads it like typed text.
+// ----------------------------------------------------------------
+
+export interface ChoiceMessage {
+  kind: 'buttons' | 'list';
+  bodyText: string;
+  /** id/title pairs, titles truncated to the Meta limit for the kind. */
+  options: Array<{ id: string; title: string }>;
+  /** Only for kind='list': label of the tap-to-expand button. */
+  buttonLabel?: string;
+}
+
+/**
+ * Normalize a body + raw option strings into a sendable choice message.
+ * Pure — exported for tests. Throws on 0 options; caps at 10; dedupes
+ * empty strings; truncates titles to the per-kind Meta limit.
+ */
+export function buildChoiceMessage(bodyText: string, rawOptions: unknown[], buttonLabel?: string): ChoiceMessage {
+  const body = String(bodyText ?? '').trim().slice(0, INTERACTIVE_LIMITS.bodyMaxLength);
+  if (!body) throw new Error('body_text is required.');
+  const titles: string[] = [];
+  for (const o of rawOptions) {
+    const t = String(o ?? '').trim();
+    if (t && !titles.includes(t)) titles.push(t);
+    if (titles.length >= INTERACTIVE_LIMITS.maxListRowsTotal) break;
+  }
+  if (titles.length === 0) throw new Error('options must contain 1-10 non-empty strings.');
+  const kind: ChoiceMessage['kind'] = titles.length <= INTERACTIVE_LIMITS.maxButtons ? 'buttons' : 'list';
+  const titleMax = kind === 'buttons'
+    ? INTERACTIVE_LIMITS.buttonTitleMaxLength
+    : INTERACTIVE_LIMITS.listRowTitleMaxLength;
+  const options = titles.map((t, i) => ({ id: `opt_${i + 1}`, title: t.slice(0, titleMax) }));
+  if (kind === 'buttons') return { kind, bodyText: body, options };
+  const label = String(buttonLabel ?? '').trim().slice(0, INTERACTIVE_LIMITS.buttonTitleMaxLength) || 'Choose an option';
+  return { kind, bodyText: body, options, buttonLabel: label };
+}
+
+export const replyWithChoices: ToolHandler = {
+  name: 'reply_with_choices',
+  description:
+    'Ask the customer a question with TAPPABLE answer options instead of making them type. ' +
+    'ALWAYS use this (in any stage) when your question has 2-10 fixed answers: yes/no offers, ' +
+    '"already registered or new?", live-in vs live-out, picking a candidate or a time slot. ' +
+    'Up to 3 options show as buttons; 4-10 as a tappable list. ' +
+    'body_text IS the message the customer reads — put your full question there, in the conversation language. ' +
+    'After this tool succeeds your turn is COMPLETE: output an EMPTY final reply, never repeat the question or options as text.',
+  parameters: {
+    type: 'object',
+    properties: {
+      body_text: {
+        type: 'string',
+        description: 'The question the customer reads above the options. Full sentence(s), conversation language, ≤1024 chars.',
+      },
+      options: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '2-10 short answer options, in the conversation language. Keep each under 20 characters (24 for 4+ options).',
+      },
+      button_label: {
+        type: 'string',
+        description: 'Only used when 4+ options (list format): label of the tap-to-open button, e.g. "View options". ≤20 chars. Default "Choose an option".',
+      },
+    },
+    required: ['body_text', 'options'],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    if (!ctx.whatsapp) {
+      return { error: 'WhatsApp send credentials are not available in this run. Ask the question in plain text instead.' };
+    }
+    let choice: ChoiceMessage;
+    try {
+      choice = buildChoiceMessage(
+        String(args.body_text ?? ''),
+        Array.isArray(args.options) ? args.options : [],
+        typeof args.button_label === 'string' ? args.button_label : undefined,
+      );
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+
+    const to = sanitizePhoneForMeta(ctx.contactPhone);
+    let messageId = '';
+    try {
+      if (choice.kind === 'buttons') {
+        const r = await sendInteractiveButtons({
+          phoneNumberId: ctx.whatsapp.phoneNumberId,
+          accessToken: ctx.whatsapp.accessToken,
+          to,
+          bodyText: choice.bodyText,
+          buttons: choice.options,
+        });
+        messageId = r.messageId;
+      } else {
+        const r = await sendInteractiveList({
+          phoneNumberId: ctx.whatsapp.phoneNumberId,
+          accessToken: ctx.whatsapp.accessToken,
+          to,
+          bodyText: choice.bodyText,
+          buttonLabel: choice.buttonLabel ?? 'Choose an option',
+          sections: [{ rows: choice.options }],
+        });
+        messageId = r.messageId;
+      }
+    } catch (e) {
+      // Interactive sends can be rejected in rare account/region gaps —
+      // degrade to plain text with numbered options rather than silence.
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn('[reply_with_choices] interactive send failed, falling back to text:', msg);
+      try {
+        const fallback = `${choice.bodyText}\n${choice.options.map((o, i) => `${i + 1}. ${o.title}`).join('\n')}`;
+        const r = await sendTextMessage({
+          phoneNumberId: ctx.whatsapp.phoneNumberId,
+          accessToken: ctx.whatsapp.accessToken,
+          to,
+          text: fallback,
+        });
+        messageId = r.messageId;
+        await persistChoiceMessage(ctx, choice, messageId, 'text');
+        return {
+          ok: true,
+          delivered_as: 'text_fallback',
+          note: 'Options were sent as a numbered plain-text list (interactive rendering unavailable). Your final reply this turn MUST be empty.',
+        };
+      } catch (e2) {
+        return { error: `Could not deliver the choices: ${e2 instanceof Error ? e2.message : String(e2)}` };
+      }
+    }
+
+    await persistChoiceMessage(ctx, choice, messageId, 'interactive');
+    return {
+      ok: true,
+      delivered_as: choice.kind,
+      options_count: choice.options.length,
+      note:
+        'The question with tappable options is now in the customer\'s chat. Your turn is COMPLETE — ' +
+        'output an EMPTY final reply. Do NOT repeat the question or the options as text.',
+    };
+  },
+};
+
+async function persistChoiceMessage(
+  ctx: ToolContext,
+  choice: ChoiceMessage,
+  messageId: string,
+  contentType: 'interactive' | 'text',
+): Promise<void> {
+  const persisted = `${choice.bodyText}\n${choice.options.map((o) => `▸ ${o.title}`).join('\n')}`;
+  await ctx.supabase.from('messages').insert({
+    conversation_id: ctx.conversationId,
+    sender_type: 'agent',
+    agent_kind: 'ai',
+    content_type: contentType,
+    content_text: persisted,
+    message_id: messageId,
+    status: 'sent',
+  });
+  await ctx.supabase
+    .from('conversations')
+    .update({
+      last_message_text: choice.bodyText.slice(0, 200),
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', ctx.conversationId);
+}
+
+// ----------------------------------------------------------------
 // save_match_alert — persist a saved search so the engagement cron
 // (/api/ai/engagement/cron) can proactively message the customer when
 // NEW matching maids (sponsor side) or jobs (maid side) appear. This
@@ -1405,5 +1584,6 @@ export const ETHIOPIAN_MAIDS_TOOLS: ToolHandler[] = [
   listJobs,
   getPricing,
   saveMatchAlert,
+  replyWithChoices,
   escalateToHuman,
 ];
