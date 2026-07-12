@@ -43,7 +43,7 @@ export async function PUT(
   if (!doc) return NextResponse.json({ error: 'Document not found' }, { status: 404 });
 
   try {
-    const result = await ingestDocument(supabase, { documentId: id, userId: user.id, content });
+    const result = await ingestDocument(supabase, { documentId: id, userId: user.id, title, content });
     return NextResponse.json({ id, ...result });
   } catch (e) {
     return NextResponse.json(

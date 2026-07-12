@@ -105,6 +105,18 @@ export interface IngestResult {
 }
 
 /**
+ * Retrieval units carry their document title as a header line so every
+ * chunk is self-contained: "UAE rest hours" must match the UAE doc even
+ * when the rest-hours sentence lands in a chunk that never repeats the
+ * word "UAE". Improves both tsvector matching and embedding quality.
+ * Pure — exported for tests.
+ */
+export function chunkRowContent(title: string, chunk: string): string {
+  const t = title.trim();
+  return t ? `[${t}]\n${chunk}` : chunk;
+}
+
+/**
  * (Re-)ingest a document: replace its chunks with freshly chunked +
  * embedded content and stamp the document's status. An embedding
  * failure still stores the chunks (FTS keeps working) with
@@ -112,9 +124,9 @@ export interface IngestResult {
  */
 export async function ingestDocument(
   sb: SupabaseClient,
-  input: { documentId: string; userId: string; content: string },
+  input: { documentId: string; userId: string; title: string; content: string },
 ): Promise<IngestResult> {
-  const chunks = chunkText(input.content);
+  const chunks = chunkText(input.content).map((c) => chunkRowContent(input.title, c));
 
   let embeddings: number[][] | null = null;
   let embeddingStatus: IngestResult['embeddingStatus'] = 'text_only';

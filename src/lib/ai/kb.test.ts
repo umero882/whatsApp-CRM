@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chunkText, embedTexts } from './kb';
+import { chunkRowContent, chunkText, embedTexts } from './kb';
 
 describe('chunkText', () => {
   it('returns the whole text as one chunk when short', () => {
@@ -74,5 +74,16 @@ describe('embedTexts', () => {
       json: async () => ({ error: { message: 'Incorrect API key provided' } }),
     })));
     await expect(embedTexts(['a'], 'sk-bad')).rejects.toThrow('Incorrect API key provided');
+  });
+});
+
+describe('chunkRowContent', () => {
+  it('prefixes chunks with the document title as a header line', () => {
+    expect(chunkRowContent('UAE — rules', 'At least 12 hours of rest per day.'))
+      .toBe('[UAE — rules]\nAt least 12 hours of rest per day.');
+  });
+
+  it('passes content through when the title is blank', () => {
+    expect(chunkRowContent('  ', 'Some chunk.')).toBe('Some chunk.');
   });
 });

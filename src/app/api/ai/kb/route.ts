@@ -59,6 +59,7 @@ export async function POST(request: Request) {
     const result = await ingestDocument(supabase, {
       documentId: doc.id,
       userId: user.id,
+      title,
       content,
     });
     return NextResponse.json({ id: doc.id, ...result });
