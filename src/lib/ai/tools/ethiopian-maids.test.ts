@@ -6,6 +6,7 @@ import {
   buildEscalationForward,
   saveMatchAlert,
 } from './ethiopian-maids';
+import { formatKbPassages } from './knowledge-base';
 import type { ToolContext } from './registry';
 
 describe('buildEscalationForward', () => {
@@ -185,5 +186,26 @@ describe('buildChoiceMessage', () => {
     expect(c.options).toHaveLength(10);
     expect(() => buildChoiceMessage('', ['A'])).toThrow(/body_text/);
     expect(() => buildChoiceMessage('Q?', ['', '  '])).toThrow(/options/);
+  });
+});
+
+describe('formatKbPassages', () => {
+  it('formats hits with source titles and a strict answering note', () => {
+    const r = formatKbPassages([
+      { chunk_id: 'c1', document_id: 'd1', document_title: 'Fees & inclusions', content: 'The placement fee includes visa and medical.', score: 0.9 },
+      { chunk_id: 'c2', document_id: 'd2', document_title: 'Refund policy', content: '90-day replacement guarantee.', score: 0.5 },
+    ]);
+    expect(r.found).toBe(2);
+    expect(r.passages).toEqual([
+      { source: 'Fees & inclusions', content: 'The placement fee includes visa and medical.' },
+      { source: 'Refund policy', content: '90-day replacement guarantee.' },
+    ]);
+    expect(r.note).toContain('ONLY these passages');
+  });
+
+  it('empty result instructs the model to admit the gap, never invent', () => {
+    const r = formatKbPassages([]);
+    expect(r.found).toBe(0);
+    expect(r.note).toContain('do NOT guess');
   });
 });

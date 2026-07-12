@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Settings, MessageSquare, Tag, User, Palette, Sparkles, Bot } from 'lucide-react';
+import { Settings, MessageSquare, Tag, User, Palette, Sparkles, Bot, BookOpen } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { WhatsAppConfig } from '@/components/settings/whatsapp-config';
 import { TemplateManager } from '@/components/settings/template-manager';
@@ -12,12 +12,14 @@ import { SessionsCard } from '@/components/settings/sessions-card';
 import { AppearancePanel } from '@/components/settings/appearance-panel';
 import { AIProviderConfig } from '@/components/settings/ai-provider-config';
 import { AIAgentConfig } from '@/components/settings/ai-agent-config';
+import { KnowledgeBaseConfig } from '@/components/settings/knowledge-base-config';
 
 const TAB_VALUES = [
   'profile',
   'whatsapp',
   'ai',
   'agent',
+  'knowledge',
   'templates',
   'tags',
   'appearance',
@@ -86,6 +88,13 @@ export default function SettingsPage() {
             AI Agent
           </TabsTrigger>
           <TabsTrigger
+            value="knowledge"
+            className="data-active:bg-slate-800 data-active:text-primary text-slate-400"
+          >
+            <BookOpen className="size-4" />
+            Knowledge
+          </TabsTrigger>
+          <TabsTrigger
             value="templates"
             className="data-active:bg-slate-800 data-active:text-primary text-slate-400"
           >
@@ -124,6 +133,10 @@ export default function SettingsPage() {
 
         <TabsContent value="agent">
           <AIAgentConfig />
+        </TabsContent>
+
+        <TabsContent value="knowledge">
+          <KnowledgeBaseConfig />
         </TabsContent>
 
         <TabsContent value="templates">
