@@ -56,6 +56,80 @@ export function vapiResult(toolCallId: string, value: unknown): { toolCallId: st
   };
 }
 
+// ────────────────────────────────────────────────────────────────────
+// End-of-call reports → inbox call log
+// ────────────────────────────────────────────────────────────────────
+
+export interface VapiCallReport {
+  callId: string;
+  /** Digits-only caller number when extractable (from E.164 or SIP URI). */
+  callerDigits: string | null;
+  endedReason: string | null;
+  durationSeconds: number | null;
+  summary: string | null;
+  transcript: string | null;
+  recordingUrl: string | null;
+}
+
+/** "sip:971588593894@sip.vapi.ai" | "+971 58 859 3894" → "971588593894". Pure. */
+export function extractCallerDigits(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const beforeAt = raw.split('@')[0];
+  const digits = beforeAt.replace(/\D/g, '');
+  return digits.length >= 7 ? digits : null;
+}
+
+/**
+ * Parse a Vapi end-of-call-report webhook. Field locations vary across
+ * Vapi versions (top-level vs `artifact.*`) — read both. Returns null
+ * for any other message type. Pure — exported for tests.
+ */
+export function parseVapiEndOfCall(body: unknown): VapiCallReport | null {
+  const message = (body as { message?: Record<string, unknown> })?.message;
+  if (!message || message.type !== 'end-of-call-report') return null;
+  const call = (message.call ?? {}) as Record<string, unknown>;
+  const artifact = (message.artifact ?? {}) as Record<string, unknown>;
+  const customer = (call.customer ?? {}) as Record<string, unknown>;
+
+  const callId = typeof call.id === 'string' ? call.id : null;
+  if (!callId) return null;
+
+  const durationMs = typeof message.durationMs === 'number' ? message.durationMs
+    : typeof message.durationSeconds === 'number' ? message.durationSeconds * 1000
+    : null;
+
+  const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null);
+
+  return {
+    callId,
+    callerDigits: extractCallerDigits(customer.number ?? customer.sipUri ?? call.customerNumber),
+    endedReason: str(message.endedReason),
+    durationSeconds: durationMs !== null ? Math.round(durationMs / 1000) : null,
+    summary: str(message.summary) ?? str(artifact.summary),
+    transcript: str(message.transcript) ?? str(artifact.transcript),
+    recordingUrl: str(message.recordingUrl) ?? str(artifact.recordingUrl) ?? str(artifact.recording),
+  };
+}
+
+const TRANSCRIPT_CAP = 4000;
+
+/** Inbox-facing text for a completed voice call. Pure — exported for tests. */
+export function formatCallLogMessage(r: VapiCallReport): string {
+  const mins = r.durationSeconds !== null
+    ? `${Math.floor(r.durationSeconds / 60)} min ${r.durationSeconds % 60} sec`
+    : 'duration unknown';
+  const lines = [`📞 Voice call — ${mins}${r.endedReason ? ` (${r.endedReason})` : ''}`];
+  if (r.summary) lines.push('', `Summary: ${r.summary}`);
+  if (r.recordingUrl) lines.push('', `Recording: ${r.recordingUrl}`);
+  if (r.transcript) {
+    const t = r.transcript.length > TRANSCRIPT_CAP
+      ? `${r.transcript.slice(0, TRANSCRIPT_CAP)}…`
+      : r.transcript;
+    lines.push('', 'Transcript:', t);
+  }
+  return lines.join('\n');
+}
+
 /**
  * Voice-friendly rendering of KB passages: short, no markdown, ready
  * to be spoken. Pure.
