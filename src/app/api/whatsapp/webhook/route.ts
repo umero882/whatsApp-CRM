@@ -934,12 +934,15 @@ async function findOrCreateConversation(userId: string, contactId: string) {
     return existing
   }
 
-  // Create new conversation
+  // Create new conversation. This webhook is WhatsApp-only; other
+  // channels (instagram/messenger/telegram) get their own webhooks
+  // that stamp their own channel.
   const { data: newConv, error: createError } = await supabaseAdmin()
     .from('conversations')
     .insert({
       user_id: userId,
       contact_id: contactId,
+      channel: 'whatsapp',
     })
     .select()
     .single()

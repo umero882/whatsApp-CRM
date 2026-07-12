@@ -25,6 +25,7 @@ import { supabaseAdmin } from '@/lib/flows/admin-client';
 import { decrypt } from '@/lib/whatsapp/encryption';
 import { sendTextMessage } from '@/lib/whatsapp/meta-api';
 import { sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
+import { filterToolsForChannel, isChannel, sendChannelText, type Channel } from '@/lib/channels/router';
 import { makeProvider, type ProviderId, ProviderError } from './providers';
 import type {
   AgentMessage,
@@ -115,6 +116,7 @@ interface ProviderConfigRow {
 interface ConversationRow {
   id: string;
   user_id: string;
+  channel: string | null;
   ai_paused_until: string | null;
   contact:
     | { id: string; name: string | null; phone: string }[]
@@ -156,7 +158,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   // ─── Load conversation + contact ────────────────────────────────────
   const { data: convRaw, error: convErr } = await sb
     .from('conversations')
-    .select('id, user_id, ai_paused_until, contact:contacts(id, name, phone)')
+    .select('id, user_id, channel, ai_paused_until, contact:contacts(id, name, phone)')
     .eq('id', conversationId)
     .maybeSingle();
   if (convErr) throw new Error(`load conversation: ${convErr.message}`);
@@ -168,6 +170,10 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   if (conv.ai_paused_until && new Date(conv.ai_paused_until).getTime() > Date.now()) {
     return { kind: 'skipped', reason: 'ai_paused' };
   }
+
+  // Which platform this thread lives on. Pre-migration rows and the
+  // WhatsApp webhook both resolve to 'whatsapp'.
+  const channel: Channel = isChannel(conv.channel) ? conv.channel : 'whatsapp';
 
   // ─── Load agent + provider + WhatsApp config ────────────────────────
   const { data: agentCfg, error: agentErr } = await sb
@@ -253,6 +259,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     supabase: sb,
     userId: conv.user_id,
     conversationId: conv.id,
+    channel,
     contactPhone: contact.phone,
     contactName: contact.name ?? null,
     escalationPhone: process.env.ESCALATION_WHATSAPP_NUMBER || DEFAULT_ESCALATION_PHONE,
@@ -270,14 +277,15 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   // Exception: send_app_download_card stays available in EVERY stage —
   // directing new customers to the app is the primary action in
   // DISCOVERY/QUALIFICATION, exactly where the other tools are gated.
-  const stageTools: ToolHandler[] = allowTools
-    ? allowedTools
-    : allowedTools.filter((t) => ALL_STAGE_TOOLS.has(t.name));
+  const stageTools: ToolHandler[] = filterToolsForChannel(
+    allowTools ? allowedTools : allowedTools.filter((t) => ALL_STAGE_TOOLS.has(t.name)),
+    channel,
+  );
   const toolSpecs = toolsToSpecs(stageTools);
 
   // ─── Compose system prompt ──────────────────────────────────────────
   const persona = (agent.system_prompt ?? '').trim() || defaultPersona(agent.business_name);
-  const runtimeBlock = buildRuntimeBlock(stage, intent, language, customerContext, stageTools, allowTools, maidPassportOnFile);
+  const runtimeBlock = buildRuntimeBlock(stage, intent, language, customerContext, stageTools, allowTools, maidPassportOnFile, channel);
   const directive = OPERATING_DIRECTIVE;
   // APP_INFO_BLOCK is injected server-side (not only in the editable
   // persona) so the app-funnel policy survives any custom prompt.
@@ -320,7 +328,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
           return { kind: 'replied', text: '[interactive choices]', stage, turns: turn + 1, toolsUsed };
         }
         await postAndPersist(sb, waCfg, accessToken, contact, conv.id,
-          stageHoldingReply(stage, language));
+          stageHoldingReply(stage, language), channel);
         return { kind: 'failed', reason: `provider: ${e.message}` };
       }
       throw e;
@@ -385,7 +393,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
         }
       }
       console.log('[ai-agent] turn', turn + 1, 'reply:', text.slice(0, 120));
-      await postAndPersist(sb, waCfg, accessToken, contact, conv.id, text);
+      await postAndPersist(sb, waCfg, accessToken, contact, conv.id, text, channel);
       const escalated = toolsUsed.includes('escalate_to_human');
       return escalated
         ? { kind: 'escalated', reason: 'escalate_to_human tool used' }
@@ -451,7 +459,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     return { kind: 'replied', text: '[interactive choices]', stage, turns: agent.max_turns, toolsUsed };
   }
   await postAndPersist(sb, waCfg, accessToken, contact, conv.id,
-    stageHoldingReply(stage, language));
+    stageHoldingReply(stage, language), channel);
   return { kind: 'failed', reason: 'max_turns_exceeded' };
 }
 
@@ -761,6 +769,7 @@ function buildRuntimeBlock(
   activeTools: ToolHandler[],
   toolsAllowedThisTurn: boolean,
   maidPassportOnFile: boolean | null,
+  channel: Channel = 'whatsapp',
 ): string {
   const toolList = activeTools.map((t) => `${t.name} — ${t.description.split('.')[0]}.`).join('\n  • ');
   const stageGuide = STAGE_GUIDANCE[stage];
@@ -776,9 +785,12 @@ function buildRuntimeBlock(
   const passportLine = maidPassportOnFile === false
     ? '\nPASSPORT: This registered maid has NO passport document on file. If the conversation reaches document collection, ask ONCE for a clear photo of her passport. If she already sent it this session, do not ask again. When maidPassportOnFile is true or null, NEVER ask for the passport.\n'
     : '';
+  const channelLine = channel === 'whatsapp'
+    ? ''
+    : `\nCHANNEL: ${channel} — interactive buttons, cards, and download cards are NOT available here. When a question has fixed answers, list them as a short numbered plain-text list and ask the customer to reply with a number or the option name.\n`;
   return `═══ RUNTIME CONTEXT ═══
 STAGE: ${stage}
-INTENT: ${intent}
+INTENT: ${intent}${channelLine}
 LANGUAGE: ${language} (reply in this language)
 ${customerLine}
 Customer turns so far in this conversation: ${ctx.customerTurns}
@@ -985,19 +997,19 @@ async function postAndPersist(
   contact: { id: string; phone: string },
   conversationId: string,
   text: string,
+  channel: Channel = 'whatsapp',
 ): Promise<void> {
-  const phone = sanitizePhoneForMeta(contact.phone);
   let waMessageId = '';
   try {
-    const r = await sendTextMessage({
-      phoneNumberId: waCfg.phone_number_id,
-      accessToken,
-      to: phone,
+    const r = await sendChannelText({
+      channel,
+      to: contact.phone,
       text,
+      whatsapp: { phoneNumberId: waCfg.phone_number_id, accessToken },
     });
     waMessageId = r.messageId;
   } catch (e) {
-    console.error('[ai-agent] meta send failed:', e instanceof Error ? e.message : e);
+    console.error('[ai-agent] channel send failed:', channel, e instanceof Error ? e.message : e);
     await sb.from('messages').insert({
       conversation_id: conversationId,
       sender_type: 'agent',

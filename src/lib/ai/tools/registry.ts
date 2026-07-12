@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import type { Channel } from '@/lib/channels/router';
 import type { ToolSpec } from '../providers/types';
 
 /**
@@ -18,6 +19,8 @@ export interface ToolContext {
   supabase: SupabaseClient;
   userId: string;
   conversationId: string;
+  /** Platform this conversation lives on ('whatsapp' for all pre-omnichannel rows). */
+  channel: Channel;
   contactPhone: string;
   /** Customer display name from the contacts table, if known. */
   contactName: string | null;
