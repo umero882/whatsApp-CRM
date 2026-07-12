@@ -12,7 +12,13 @@ import {
   summarizeMaidMatch,
   type AlertMaidRow,
 } from '@/lib/ai/matching';
-import { parseVapiToolCalls, speakableKbAnswer, vapiResult } from '@/lib/ai/vapi-tools';
+import {
+  formatCallLogMessage,
+  parseVapiEndOfCall,
+  parseVapiToolCalls,
+  speakableKbAnswer,
+  vapiResult,
+} from '@/lib/ai/vapi-tools';
 
 /**
  * Vapi server-tools endpoint — voice-Lucy's bridge into the CRM.
@@ -29,6 +35,97 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const EPOCH = '1970-01-01T00:00:00.000Z';
+
+/**
+ * Persist a finished voice call into the caller's conversation so calls
+ * and chats share one timeline. Caller matching is by phone-digit
+ * suffix (WhatsApp calls arrive from the same number the customer
+ * chats from); unknown callers get a fresh contact + conversation.
+ * Idempotent per Vapi call id (message_id = "vapi:<callId>").
+ */
+async function logCallToInbox(report: import('@/lib/ai/vapi-tools').VapiCallReport): Promise<void> {
+  const sb = supabaseAdmin();
+  const messageId = `vapi:${report.callId}`;
+
+  // Dedupe — Vapi retries webhooks.
+  const { data: dupe } = await sb
+    .from('messages')
+    .select('id')
+    .eq('message_id', messageId)
+    .maybeSingle();
+  if (dupe) return;
+
+  const { data: owner } = await sb
+    .from('whatsapp_config')
+    .select('user_id')
+    .limit(1)
+    .maybeSingle();
+  if (!owner) return;
+
+  // Match the caller to an existing contact by last-8-digit suffix.
+  let contactId: string | null = null;
+  let conversationId: string | null = null;
+  if (report.callerDigits) {
+    const suffix = report.callerDigits.slice(-8);
+    const { data: contact } = await sb
+      .from('contacts')
+      .select('id')
+      .eq('user_id', owner.user_id)
+      .like('phone', `%${suffix}`)
+      .limit(1)
+      .maybeSingle();
+    contactId = contact?.id ?? null;
+  }
+  if (!contactId) {
+    const phone = report.callerDigits ? `+${report.callerDigits}` : `voice:${report.callId.slice(0, 8)}`;
+    const { data: created } = await sb
+      .from('contacts')
+      .insert({
+        user_id: owner.user_id,
+        phone,
+        name: report.callerDigits ? `Voice caller ${phone}` : 'Voice caller',
+      })
+      .select('id')
+      .single();
+    contactId = created?.id ?? null;
+  }
+  if (!contactId) return;
+
+  const { data: conv } = await sb
+    .from('conversations')
+    .select('id')
+    .eq('user_id', owner.user_id)
+    .eq('contact_id', contactId)
+    .maybeSingle();
+  conversationId = conv?.id ?? null;
+  if (!conversationId) {
+    const { data: newConv } = await sb
+      .from('conversations')
+      .insert({ user_id: owner.user_id, contact_id: contactId, channel: 'whatsapp' })
+      .select('id')
+      .single();
+    conversationId = newConv?.id ?? null;
+  }
+  if (!conversationId) return;
+
+  const text = formatCallLogMessage(report);
+  await sb.from('messages').insert({
+    conversation_id: conversationId,
+    sender_type: 'customer',
+    content_type: 'text',
+    content_text: text,
+    message_id: messageId,
+    status: 'delivered',
+  });
+  await sb
+    .from('conversations')
+    .update({
+      last_message_text: '📞 Voice call',
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', conversationId);
+}
 
 export async function POST(request: Request) {
   const expected = process.env.VAPI_TOOLS_SECRET;
@@ -48,9 +145,20 @@ export async function POST(request: Request) {
   }
 
   const calls = parseVapiToolCalls(body);
-  // Non-tool messages (status updates, transcripts, end-of-call
-  // reports) are acknowledged without action for now.
-  if (calls.length === 0) return NextResponse.json({ ok: true });
+  if (calls.length === 0) {
+    // Not a tool call — maybe an end-of-call report worth logging into
+    // the inbox. Everything else (status updates, live transcripts) is
+    // acknowledged without action.
+    const report = parseVapiEndOfCall(body);
+    if (report) {
+      try {
+        await logCallToInbox(report);
+      } catch (e) {
+        console.warn('[vapi-tools] call log failed:', e instanceof Error ? e.message : e);
+      }
+    }
+    return NextResponse.json({ ok: true });
+  }
 
   const sb = supabaseAdmin();
   // Single-operator deployment: the owner is the (only) agent-config row.
