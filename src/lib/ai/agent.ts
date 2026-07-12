@@ -55,7 +55,14 @@ type Stage =
 const TOOL_STAGES: ReadonlySet<Stage> = new Set(['RECOMMENDATION', 'BOOKING']);
 
 /** Tools that stay available in every stage, even tool-gated ones. */
-const ALL_STAGE_TOOLS: ReadonlySet<string> = new Set(['send_app_download_card']);
+const ALL_STAGE_TOOLS: ReadonlySet<string> = new Set(['send_app_download_card', 'reply_with_choices']);
+
+/**
+ * Tools whose success means the customer-facing message for this turn
+ * has ALREADY been delivered by the tool itself — an empty final text
+ * from the model is the correct outcome, not a failure to retry.
+ */
+const SELF_DELIVERING_TOOLS: ReadonlySet<string> = new Set(['reply_with_choices']);
 
 /** 24h gap = treat as a fresh conversation. */
 const RETURN_GAP_MS = 24 * 60 * 60 * 1000;
@@ -324,6 +331,13 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
         }
       }
       if (!text) {
+        // A self-delivering tool (reply_with_choices) already put this
+        // turn's message in the customer's chat — empty final text is
+        // the instructed, correct outcome. Finish without sending more.
+        if (toolsUsed.some((t) => SELF_DELIVERING_TOOLS.has(t))) {
+          console.log('[ai-agent] turn complete via self-delivering tool, no trailing text');
+          return { kind: 'replied', text: '[interactive choices]', stage, turns: turn + 1, toolsUsed };
+        }
         // Empty content with no tool calls — extremely rare but seen
         // when models go offline mid-response. Retry once with a
         // forceful instruction; if that also fails, send the stage-
@@ -665,9 +679,9 @@ const STAGE_GUIDANCE: Record<Stage, string> = {
   GREETING:
     'This is a fresh conversation. Send a warm welcome that names the business. Do NOT assume the customer wants to hire OR is looking for work — you do not know yet. Do NOT ask questions yet. One friendly sentence is plenty. ONE exception: if their message ALREADY asks to register, download the app, hire, or find work, call the send_app_download_card TOOL (a real tool call — never type its name in your text) and reply with one sentence pointing at the card.',
   DISCOVERY:
-    'You have greeted the customer. FIRST triage: ask ONE question — "Are you already registered with us (an existing customer), or new here?" — unless the history already answers it. NEW customers who want to register, hire, or find work → call send_app_download_card, then ONE short sentence pointing at the card; do NOT start registration or data collection in chat. EXISTING customers or anyone with a service issue → find out what they need, per the INTENT GUIDANCE above. No other tools.',
+    'You have greeted the customer. FIRST triage — unless the history already answers it, call reply_with_choices with the question "Are you already registered with us, or new here?" and options like ["Existing customer","I\'m new"] (translate to the conversation language). NEW customers who want to register, hire, or find work → call send_app_download_card, then ONE short sentence pointing at the card; do NOT start registration or data collection in chat. EXISTING customers or anyone with a service issue → find out what they need, per the INTENT GUIDANCE above. No other tools.',
   QUALIFICATION:
-    'You know the customer intent (see INTENT GUIDANCE above). If they are NEW and want to register/hire/find work, call send_app_download_card instead of qualifying in chat. For existing customers, gather the relevant basics with ONE question per turn, skipping what you already know from history. No other tools until you have enough info per the intent guidance.',
+    'You know the customer intent (see INTENT GUIDANCE above). If they are NEW and want to register/hire/find work, call send_app_download_card instead of qualifying in chat. For existing customers, gather the relevant basics with ONE question per turn, skipping what you already know from history. Fixed-answer questions (live-in/live-out, duties, emirate) go through reply_with_choices; open-ended ones (start date, languages) stay plain text. No other tools until you have enough info per the intent guidance.',
   RECOMMENDATION:
     'You have enough info to make a recommendation. Use the right tool for the intent (search_maids for sponsors, list_jobs for job seekers). Present 2-3 results max. Offer the next step.',
   BOOKING:
@@ -686,11 +700,11 @@ customers; the app is the funnel.
 IF EXISTING customer (registered, or clearly already working with us):
 proceed with the flow below.
 Qualification questions to gather (one per turn, skip if already answered):
-  1. Which emirate are you in?
-  2. Live-in or live-out?
-  3. Main duties (childcare / cooking / elderly care / general)?
-  4. When do you need her to start?
-  5. Any language or experience preference?
+  1. Which emirate are you in? (reply_with_choices: the 7 emirates)
+  2. Live-in or live-out? (reply_with_choices: ["Live-in","Live-out"])
+  3. Main duties? (reply_with_choices: ["Childcare","Cooking","Elderly care","General housework"])
+  4. When do you need her to start? (plain text — open-ended)
+  5. Any language or experience preference? (plain text)
 
 Recommendation flow — TWO TOOLS, not one:
   a) Call search_maids with the criteria you've gathered.
@@ -761,6 +775,7 @@ const OPERATING_DIRECTIVE = `═══ OPERATING RULES ═══
 • ONE WhatsApp message per turn. No multi-part bursts.
 • Use the customer's name once you know it. Never "Dear Sir/Madam".
 • ONE question per turn at most. Don't interrogate.
+• CHOICES ARE TAPPED, NOT TYPED: whenever your question has 2–10 fixed answers (yes/no, registered/new, live-in/live-out, picking a candidate or time), call reply_with_choices (available in every stage) — the customer taps an option instead of typing. The tool message IS your reply: after it succeeds, output an EMPTY final message and never repeat the options as text. Open-ended questions (name, city, dates, budgets) stay plain text.
 • NEVER invent candidates, prices, availability, or policies. Use the tools when they're enabled.
 • NEVER share a maid's full name, passport number, exact location, or phone before a confirmed booking.
 • We place Ethiopian domestic workers in the GCC only. Politely decline anything else.
