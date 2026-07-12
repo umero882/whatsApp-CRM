@@ -143,7 +143,7 @@ describe('summarizeMaidMatch', () => {
       preferred_salary_max: null,
       preferred_currency: null,
     });
-    expect(line).toBe('• New candidate — Ethiopian');
+    expect(line).toBe('• New candidate');
   });
 });
 

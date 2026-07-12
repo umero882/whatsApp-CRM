@@ -72,7 +72,7 @@ const SEARCH_MAIDS_GQL = /* GraphQL */ `
 export const searchMaids: ToolHandler = {
   name: 'search_maids',
   description:
-    'Find available Ethiopian domestic workers (maids) matching the customer requirements. ' +
+    'Find available domestic workers (maids) matching the customer requirements. ' +
     'Returns up to 5 candidates with first name, age estimate, nationality, languages, skills, salary preference, and photo URL. ' +
     'Use this BEFORE recommending any specific maid — never fabricate candidates. ' +
     'Do NOT call this for greetings or chit-chat — only when the customer has expressed interest in hiring AND given at least one criterion (location, duties, or live-in preference).',
@@ -762,7 +762,8 @@ interface MaidCardRow {
 
 function buildMaidCaption(m: MaidCardRow): string {
   const name = (m.first_name || m.full_name || 'Candidate').trim();
-  const origin = m.nationality || m.country || 'Ethiopian';
+  // The marketplace serves several nationalities — never assume one.
+  const origin = m.nationality || m.country || null;
   const expr = typeof m.experience_years === 'number' ? `${m.experience_years} yr${m.experience_years === 1 ? '' : 's'} experience` : 'experience available';
   const skills = (m.skills ?? []).slice(0, 4).join(', ');
   const langs = (m.languages ?? []).join(', ');
@@ -776,7 +777,7 @@ function buildMaidCaption(m: MaidCardRow): string {
   const liveIn = m.live_in_preference === true ? 'Live-in' : m.live_in_preference === false ? 'Live-out' : null;
   const avail = m.available_from ? `Available from ${m.available_from}` : 'Available now';
 
-  const lines: string[] = [`*${name}* — ${origin}`, `🧰 ${expr}`];
+  const lines: string[] = [origin ? `*${name}* — ${origin}` : `*${name}*`, `🧰 ${expr}`];
   if (skills) lines.push(`✅ ${skills}`);
   if (langs) lines.push(`🗣️ ${langs}`);
   if (salary) lines.push(`💰 ${salary}${liveIn ? ' · ' + liveIn : ''}`);

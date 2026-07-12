@@ -214,8 +214,9 @@ function formatSalaryRange(
 /** One bullet line for a newly-available maid. */
 export function summarizeMaidMatch(m: AlertMaidRow): string {
   const name = (m.first_name || m.full_name || 'New candidate').trim();
-  const origin = m.nationality || m.country || 'Ethiopian';
-  const parts = [`${name} — ${origin}`];
+  // The marketplace serves several nationalities — never assume one.
+  const origin = m.nationality || m.country || null;
+  const parts = [origin ? `${name} — ${origin}` : name];
   if (typeof m.experience_years === 'number') {
     parts.push(`${m.experience_years} yr${m.experience_years === 1 ? '' : 's'} experience`);
   }
