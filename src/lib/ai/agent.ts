@@ -34,6 +34,7 @@ import {
   ETHIOPIAN_MAIDS_TOOLS,
   type AppCardLanguage,
 } from './tools/ethiopian-maids';
+import { searchKnowledgeBase } from './tools/knowledge-base';
 import type { ToolHandler, ToolContext } from './tools/registry';
 import { findTool, toolsToSpecs } from './tools/registry';
 import { makeHasuraClient } from './tools/hasura';
@@ -54,8 +55,17 @@ type Stage =
 /** Stages where the model is allowed to call tools. */
 const TOOL_STAGES: ReadonlySet<Stage> = new Set(['RECOMMENDATION', 'BOOKING']);
 
+/** Every tool the agent can use: marketplace tools + the knowledge base. */
+const AGENT_TOOLS: ToolHandler[] = [...ETHIOPIAN_MAIDS_TOOLS, searchKnowledgeBase];
+
 /** Tools that stay available in every stage, even tool-gated ones. */
-const ALL_STAGE_TOOLS: ReadonlySet<string> = new Set(['send_app_download_card', 'reply_with_choices']);
+const ALL_STAGE_TOOLS: ReadonlySet<string> = new Set([
+  'send_app_download_card',
+  'reply_with_choices',
+  // Policy/process questions ("how do visas work?") arrive at ANY
+  // stage — knowledge lookups must never be stage-gated.
+  'search_knowledge_base',
+]);
 
 /**
  * Tools whose success means the customer-facing message for this turn
@@ -254,7 +264,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     },
   };
 
-  const allowedTools = filterTools(ETHIOPIAN_MAIDS_TOOLS, agent.enabled_tools);
+  const allowedTools = filterTools(AGENT_TOOLS, agent.enabled_tools);
   // STRONG GATE: when stage forbids tools, the model literally can't
   // call them. Stronger than relying on the prompt to say "don't".
   // Exception: send_app_download_card stays available in EVERY stage —
@@ -885,6 +895,7 @@ const OPERATING_DIRECTIVE = `═══ OPERATING RULES ═══
 • ONE question per turn at most. Don't interrogate.
 • CHOICES ARE TAPPED, NOT TYPED: whenever your question has 2–10 fixed answers (yes/no, registered/new, live-in/live-out, picking a candidate or time), call reply_with_choices (available in every stage) — the customer taps an option instead of typing. The tool message IS your reply: after it succeeds, output an EMPTY final message and never repeat the options as text. NEVER write answer options inside your text — not as bullets, dashes, numbered lines, NOR as a prose sentence like "Options include A, B, or C" — every enumeration of answers is ALWAYS a reply_with_choices call. Open-ended questions (name, city, dates, budgets) stay plain text.
 • NEVER invent candidates, prices, availability, or policies. Use the tools when they're enabled.
+• KNOWLEDGE: questions about how our service works — visa process, timelines, what fees include, refunds/replacements, medical checks, trial periods, required documents — go through search_knowledge_base FIRST (available in every stage). Answer ONLY from the returned passages; when nothing is found, say you'll confirm with our team. NEVER answer policy from memory.
 • NEVER share a maid's full name, passport number, exact location, or phone before a confirmed booking.
 • We place Ethiopian domestic workers in the GCC only. Politely decline anything else.
 • REGISTRATION POLICY: sign-up, profile creation, and job applications happen in the Ethiopian Maids app — never over chat. New customers get the official download card via send_app_download_card — NEVER a pasted store URL (customers fear scam links). Chat is for customer service.
