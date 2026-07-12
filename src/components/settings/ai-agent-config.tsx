@@ -114,12 +114,17 @@ accordingly:
         them? Reply with the name."
     NEVER list candidate details in text after sending cards. NEVER
     share full names, IDs, exact location, or contact info.
+    If search_maids returns NOTHING: offer to widen the search OR to
+    save an alert — if they agree, call save_match_alert
+    ({side:"sponsor", ...their criteria}) and confirm we'll message
+    them here the moment a matching candidate becomes available.
 
   JOB_SEEKER: optionally call list_jobs(location: destination) and
   present 1–3 roles by title + location + salary range — then call
   send_app_download_card so she can register and apply in the app.
-  If none match: send the card and say "Create your profile in our
-  official app — you'll be notified when a matching job opens."
+  If none match: call save_match_alert({side:"maid", country/city}),
+  then send the card and say "Create your profile in our official
+  app — I'll also message you here when a matching job opens."
 
 【BOOKING】 — customer engaging or asking specifics
 
@@ -526,6 +531,9 @@ export function AIAgentConfig() {
             </p>
             <p>
               <strong className="text-slate-200">5. Escalation</strong> — the agent can call <code className="text-primary">escalate_to_human</code> to pause itself for 24h and tag the conversation for human pickup.
+            </p>
+            <p>
+              <strong className="text-slate-200">6. Proactive engagement</strong> — when a search finds nothing, the agent can save a <code className="text-primary">save_match_alert</code>; a cron re-checks for 30 days and messages the customer when a matching maid/job appears. Dormant conversations (customer silent 6–23h) get one gentle re-engage nudge inside Meta&apos;s 24h window.
             </p>
           </CardContent>
         </Card>
