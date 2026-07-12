@@ -660,6 +660,11 @@ function cardPointerLine(lang: Lang): string {
 export function extractChoicesFromText(
   text: string,
 ): { body: string; options: string[] } | null {
+  return extractBulletChoices(text) ?? extractProseChoices(text);
+}
+
+/** "Question?\n▸ A\n- B\n1. C" — trailing bullet/numbered option lines. */
+function extractBulletChoices(text: string): { body: string; options: string[] } | null {
   const lines = text.split('\n').map((l) => l.trim());
   const optRe = /^(?:[-•▸*›‣◦]|\d{1,2}[.)])\s*(.+)$/;
   let i = lines.length - 1;
@@ -679,6 +684,31 @@ export function extractChoicesFromText(
   // Body must actually be asking for a pick — guards against stray
   // bullet fragments in informational replies.
   if (!body.includes('?') && !/[:：]$/.test(body)) return null;
+  return { body, options };
+}
+
+/**
+ * "Question? Options include A, B, or C." — the options enumerated in
+ * a trailing prose sentence (seen in production with gpt-4o-mini after
+ * the bullet form was blocked). Only fires when the enumeration is the
+ * LAST sentence and the preceding text contains the actual question.
+ */
+function extractProseChoices(text: string): { body: string; options: string[] } | null {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const m = flat.match(
+    /\b(?:(?:the\s+)?options?\s+(?:include|are)|(?:you\s+can\s+)?choose\s+(?:from|between|one\s+of)|pick\s+(?:from|one\s+of))\s*:?\s*([^.?!]+)[.!?]?\s*$/i,
+  );
+  if (!m) return null;
+  const body = flat.slice(0, m.index).trim();
+  if (!body.includes('?')) return null;
+  const options: string[] = [];
+  for (const raw of m[1].split(/\s*,\s*|\s+(?:or|and)\s+/i)) {
+    const value = raw.replace(/^(?:or|and)\s+/i, '').trim();
+    if (!value) continue;
+    if (value.length > 30) return null;
+    if (!options.includes(value)) options.push(value);
+  }
+  if (options.length < 2 || options.length > 10) return null;
   return { body, options };
 }
 
@@ -853,7 +883,7 @@ const OPERATING_DIRECTIVE = `═══ OPERATING RULES ═══
 • ONE WhatsApp message per turn. No multi-part bursts.
 • Use the customer's name once you know it. Never "Dear Sir/Madam".
 • ONE question per turn at most. Don't interrogate.
-• CHOICES ARE TAPPED, NOT TYPED: whenever your question has 2–10 fixed answers (yes/no, registered/new, live-in/live-out, picking a candidate or time), call reply_with_choices (available in every stage) — the customer taps an option instead of typing. The tool message IS your reply: after it succeeds, output an EMPTY final message and never repeat the options as text. NEVER write answer options inside your text as bullets, dashes, or numbered lines — that is ALWAYS a reply_with_choices call. Open-ended questions (name, city, dates, budgets) stay plain text.
+• CHOICES ARE TAPPED, NOT TYPED: whenever your question has 2–10 fixed answers (yes/no, registered/new, live-in/live-out, picking a candidate or time), call reply_with_choices (available in every stage) — the customer taps an option instead of typing. The tool message IS your reply: after it succeeds, output an EMPTY final message and never repeat the options as text. NEVER write answer options inside your text — not as bullets, dashes, numbered lines, NOR as a prose sentence like "Options include A, B, or C" — every enumeration of answers is ALWAYS a reply_with_choices call. Open-ended questions (name, city, dates, budgets) stay plain text.
 • NEVER invent candidates, prices, availability, or policies. Use the tools when they're enabled.
 • NEVER share a maid's full name, passport number, exact location, or phone before a confirmed booking.
 • We place Ethiopian domestic workers in the GCC only. Politely decline anything else.

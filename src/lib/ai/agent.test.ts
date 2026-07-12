@@ -115,3 +115,33 @@ describe('stringifyHistoryMessage — interactive choices rendering', () => {
     })).toBe('Dubai');
   });
 });
+
+describe('extractChoicesFromText — prose option lists', () => {
+  it('extracts the exact production failure: "Options include A, B, C, or D."', () => {
+    const r = extractChoicesFromText(
+      "Could you please let me know the main duties for the maid for your brother's family? Options include Childcare, Cooking, Elderly care, or General housework.",
+    );
+    expect(r).toEqual({
+      body: "Could you please let me know the main duties for the maid for your brother's family?",
+      options: ['Childcare', 'Cooking', 'Elderly care', 'General housework'],
+    });
+  });
+
+  it('extracts "choose between" and "options are" phrasings', () => {
+    expect(extractChoicesFromText('Do you prefer live-in or live-out? You can choose between Live-in and Live-out.'))
+      .toEqual({ body: 'Do you prefer live-in or live-out?', options: ['Live-in', 'Live-out'] });
+    expect(extractChoicesFromText('Which emirate are you in? The options are Dubai, Abu Dhabi, or Sharjah.'))
+      .toEqual({ body: 'Which emirate are you in?', options: ['Dubai', 'Abu Dhabi', 'Sharjah'] });
+  });
+
+  it('ignores prose enumerations that are not answer options', () => {
+    // No question in the body — informational sentence.
+    expect(extractChoicesFromText('Our options include cleaning, cooking, and childcare services.')).toBeNull();
+    // Long items — benefits blurb, not option labels.
+    expect(extractChoicesFromText(
+      'What do you think? Options include a fully furnished private room in the villa, or a monthly transport allowance of 300 AED.',
+    )).toBeNull();
+    // Enumeration mid-text, not the trailing sentence.
+    expect(extractChoicesFromText('Options include Childcare or Cooking. When do you need her to start?')).toBeNull();
+  });
+});
