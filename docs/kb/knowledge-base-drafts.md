@@ -1,32 +1,48 @@
 # Knowledge Base Drafts — Ethiopian Maids
 
-Drafted 2026-07-12 for the Settings → Knowledge RAG store. Format: each
+Drafted 2026-07-12 for the Settings → Knowledge RAG store; updated same day
+to the MARKETPLACE model (platform connects sponsors ↔ agencies ↔ independent
+maids; fees/replacement/contract terms are sponsor↔agency matters governed by
+GCC domestic-worker regulations — the source of truth). Format: each
 `## DOC:` section is one knowledge-base document (heading = title, body =
-content). Load them with `load-kb-drafts.mjs` (skips any doc still containing
-a `[REVIEW:]` placeholder) or paste individually into Settings → Knowledge.
-
-Sections marked `[REVIEW: …]` are YOUR business decisions — edit them to your
-real policy before loading; the loader will not ship them as-is. Regulatory
-figures are current to early 2026 and marked for periodic re-check.
+content). Load with `load-kb-drafts.mjs` or paste into Settings → Knowledge.
+Regulatory figures are current to early 2026 — re-check periodically.
 
 ---
 
 ## DOC: About Ethiopian Maids — who we are and what we do
 
-Ethiopian Maids is a placement service that connects Ethiopian domestic
-workers (housemaids, nannies, cooks, elderly-care helpers) with sponsor
-families in the Gulf (GCC) countries: the UAE, Saudi Arabia, Kuwait, Qatar,
-Bahrain, and Oman.
+Ethiopian Maids is a placement MARKETPLACE (platform + app) that connects
+three sides: sponsor families in the Gulf (GCC) countries — the UAE, Saudi
+Arabia, Kuwait, Qatar, Bahrain, and Oman — licensed recruitment agencies,
+and independent household workers.
 
-We work with Ethiopian candidates only, and we place them only in GCC
-countries. We do not place workers of other nationalities and we do not
-recruit for other roles (no drivers, private nurses, or company staff).
+We serve ALL household staff roles: housemaids, housekeepers, nannies,
+cooks, cleaners, elderly-care helpers, all-rounders, DRIVERS, and PRIVATE
+NURSES. We do not handle company or commercial staffing, and we place only
+in GCC countries.
 
-There are two sides to our service:
+Despite our name, the platform serves candidates of several nationalities
+commonly employed in GCC households: primarily Ethiopian, alongside other
+African candidates (such as Kenyan, Ugandan, Ghanaian, Gambian, and Sierra
+Leonean) and Asian candidates (such as Filipino, Indonesian, Sri Lankan,
+and Indian).
+
+Our role is to FACILITATE: verified profiles, search and matching, video
+interviews, communication, and a dispute-and-review system. The employment
+contract, placement fees, and replacement terms are agreed directly
+between the sponsor and the recruitment agency (or independent candidate),
+governed by the destination country's domestic-worker regulations — those
+regulations are the source of truth for fees, replacement, contract
+duration, cancellation, sick leave, and similar terms. Ethiopian Maids is
+not a party to those agreements.
+
+There are three sides to our service:
 - Sponsors (families and employers) browse verified candidates, interview
-  them by video call, and hire through us.
-- Job seekers (Ethiopian women looking for domestic work) register in our
-  app, build a profile, and apply to job openings posted by sponsors.
+  them by video call, and hire through the agency or candidate they choose.
+- Agencies list their candidates and manage their placements.
+- Job seekers (independent domestic workers) register in our app, build a
+  profile, and apply to job openings posted by sponsors.
 
 This WhatsApp number is our customer-service channel. Registration, profile
 creation, browsing, and job applications all happen in the official
@@ -71,9 +87,13 @@ Creating an account and browsing are free for both sides.
    interview — you pick the time, we send you the video call link in chat
    plus reminders 1 hour and 10 minutes before the call. The candidate is
    notified through her app.
-4. Decision and paperwork. After a successful interview, our team handles
-   the offer, contract, and the visa/travel process with you, following the
-   rules of your country (see our country-specific documents).
+4. Decision and paperwork. After a successful interview, the recruitment
+   agency handling the candidate finalizes the offer, employment contract,
+   fees, and the visa/travel process with you directly, under your
+   country's domestic-worker rules (see our country documents — those
+   regulations are the source of truth for fees, replacement, contract
+   duration, and cancellation). Our platform stays with you in chat
+   throughout and records any dispute.
 5. Arrival and follow-up. We stay in contact after placement — you can
    always reach us on this number.
 
@@ -98,67 +118,101 @@ or personal phone number before a confirmed booking.
    steps required by Ethiopian law and the destination country.
 
 You must be at least 18 years old (21 for Saudi Arabia) and hold a valid
-Ethiopian passport. Under Ethiopian overseas-employment law you will also
-complete pre-departure requirements (see the Ethiopia requirements
-document).
+passport. Ethiopian citizens also complete the pre-departure requirements
+set by Ethiopian overseas-employment law (see the Ethiopia requirements
+document); candidates of other nationalities follow their own country's
+overseas-employment rules.
 
-## DOC: Placement fees — what they cover
+## DOC: Placement fees — how they work on our platform
 
-Exact fee amounts depend on the destination country — ask us in chat and we
-will quote the current official amount for your country. We never quote
-from memory; the quote you receive in chat is the official one.
+Placement fees are set by and paid to the recruitment agency handling the
+placement (or agreed directly with an independent candidate). Ethiopian
+Maids is a marketplace: we facilitate the connection, but we are NOT a
+party to the fee agreement between sponsor and agency and are not
+responsible for it.
 
-What the placement fee typically covers:
-[REVIEW: confirm exactly what YOUR fee includes and remove anything that
-does not apply — this draft lists the industry-standard inclusions:
-- candidate sourcing, screening, and document verification
-- medical fitness examination of the candidate
-- visa processing and government fees on the worker's side
-- flight ticket for the worker to the destination country
-- pre-departure orientation and occupational training certificate
-- insurance required by Ethiopian law
-- our service and coordination fee]
+The source of truth for what an agency may charge — and who must pay —
+is the destination country's domestic-worker regulation. Two important
+protections most GCC rules share: recruitment costs are the EMPLOYER'S
+responsibility (they may never be charged to the worker or deducted from
+her salary), and hiring must go through licensed channels (for example
+MoHRE-licensed centres in the UAE, the Musaned platform in Saudi Arabia).
 
-What the fee does NOT cover:
-[REVIEW: confirm — typical exclusions:
-- the worker's monthly salary (paid by the sponsor directly)
-- in-country residency/work-permit costs on the sponsor's side (e.g.
-  Emirates ID, medical insurance, permit fees — these are the sponsor's
-  legal obligation in most GCC countries)
-- food, accommodation, and daily necessities for live-in workers]
+When comparing agency offers, ask the agency for a written breakdown of
+what its fee includes. Typical items to confirm: candidate sourcing and
+screening, the worker's medical fitness examination, worker-side visa
+processing, the flight ticket, and any origin-country requirements
+(training certificate, insurance). Also confirm what is NOT included —
+the worker's monthly salary, sponsor-side residency and permit costs
+(Emirates ID, medical insurance, work permit), and daily provisions for
+live-in workers are normally the sponsor's own obligations under GCC law.
 
-Payment terms: [REVIEW: state your deposit/instalment/refund-on-failure
-terms. Do not leave this blank — payment questions are among the most
-common.]
+Ask us in chat for the current official fee reference for your country —
+we will quote it. Never pay anyone in WhatsApp chat, and always get the
+agency's full fee breakdown in writing before paying anything.
 
-## DOC: Replacement and refund policy
+Registering and browsing on the platform are free for all sides.
 
-[REVIEW: THIS ENTIRE DOCUMENT is your business policy — the draft below is
-the common industry standard in GCC maid placement. Edit every number
-before loading.]
+## DOC: Replacement, refunds, and cancellations — how they work
 
-Replacement guarantee: if the placement does not work out during the first
-[REVIEW: e.g. 90] days — for example the worker is medically unfit, refuses
-to work, or leaves — we provide a replacement candidate at no additional
-placement fee, [REVIEW: e.g. up to 2 replacements within the guarantee
-period].
+Replacement, refund, and cancellation terms are part of the agreement
+between the SPONSOR and the recruitment AGENCY (or independent candidate).
+Ethiopian Maids is a marketplace — we facilitate the connection but we are
+not a party to that agreement and not responsible for its terms.
 
-Refunds: if we cannot provide a suitable replacement within [REVIEW: e.g.
-30] days of your request during the guarantee period, we refund [REVIEW:
-e.g. the placement fee minus government and processing costs already
-incurred].
+The source of truth is the destination country's domestic-worker
+regulation, which governs probation periods, agency replacement
+obligations, contract duration, cancellation, sick leave, and end-of-
+service rights. For example, in the UAE the standard contract includes a
+probation period during which the licensed agency carries replacement
+obligations; Saudi Arabia's Musaned contracts include defined replacement
+and refund rights. See our country documents, and always confirm the
+agency's replacement and refund terms IN WRITING before paying.
 
-The guarantee does not cover: [REVIEW: typical exclusions — mistreatment or
-contract violations by the sponsor, duties materially different from the
-contract, non-payment of salary, or requests after the guarantee period.]
+What our platform does when something goes wrong:
+- Tell us here on WhatsApp — we record a formal dispute against the
+  agency (or against a sponsor, when the complaint comes from the worker
+  or agency side) and our team follows up with both parties.
+- Both sides can rate and review each other on the platform: sponsors
+  review agencies, and agencies review sponsors. Reviews are visible to
+  future users.
+- Agencies or sponsors with repeated verified complaints are flagged and
+  can be removed from the platform.
 
-To start a replacement or refund request, tell us here on WhatsApp — our
-team will take over directly.
+Serious safety concerns are treated as urgent and escalated to a human
+team member immediately, at any hour.
+
+## DOC: Our role as a platform — disputes and reviews
+
+Ethiopian Maids is a neutral marketplace connecting sponsors, licensed
+recruitment agencies, and independent domestic workers. We are not the
+employer, not the recruitment agency, and not a party to the employment
+contract or fee agreement.
+
+What we provide: verified candidate profiles, search and matching, video
+interview scheduling, match alerts, customer service in chat, and a
+dispute-and-review system that keeps both sides accountable.
+
+What is between sponsor and agency (governed by the destination country's
+domestic-worker regulations — the source of truth): placement fees and
+what they include, replacement and refund terms, contract duration and
+renewal, cancellation, probation, salary, working hours, rest days,
+annual and sick leave, and end-of-service rights.
+
+Disputes: message us here on WhatsApp. We record the dispute, our team
+follows up with both parties, and the outcome is noted on the agency's or
+sponsor's platform profile. Sponsors can review agencies and agencies can
+review sponsors; repeat verified offenders are flagged or removed.
+
+We never take payments in chat, and we never ask for passport numbers or
+bank details in chat.
 
 ## DOC: UAE — rules for hiring a domestic worker
 
 The UAE regulates domestic work under Federal Decree-Law No. 9 of 2022 (the
-Domestic Workers Law), administered by MoHRE. Key points every sponsor
+Domestic Workers Law), administered by MoHRE. The law covers all household
+occupations — housemaids, nannies, cooks, cleaners, private drivers,
+private nurses, gardeners, and similar roles. Key points every sponsor
 should know (current to early 2026 — our team re-checks these regularly):
 
 - Hiring must go through licensed recruitment agencies / domestic-worker
