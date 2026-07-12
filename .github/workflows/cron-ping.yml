@@ -1,0 +1,35 @@
+# External pinger for the CRM's cron routes. All four routes auth via
+# the same AUTOMATION_CRON_SECRET (x-cron-secret header) and are cheap
+# no-ops when nothing is due, so one 5-minute schedule drives them all.
+#
+# Secret AUTOMATION_CRON_SECRET must match the Coolify env var on the
+# wacrm app. GitHub cron timing is best-effort (5-15 min drift is
+# normal) — acceptable for reminders/re-engagement cadences.
+name: cron-ping
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: cron-ping
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping cron routes
+        env:
+          CRON_SECRET: ${{ secrets.AUTOMATION_CRON_SECRET }}
+        run: |
+          base="https://crm.sheger.cloud/api"
+          for path in ai/reminders/cron ai/engagement/cron automations/cron flows/cron; do
+            code=$(curl -sS -m 60 -o /tmp/body -w '%{http_code}' \
+              -H "x-cron-secret: ${CRON_SECRET}" "${base}/${path}" || echo 000)
+            echo "${path} -> ${code} $(cat /tmp/body | head -c 300)"
+          done
