@@ -117,6 +117,22 @@ async function logCallToInbox(report: import('@/lib/ai/vapi-tools').VapiCallRepo
     message_id: messageId,
     status: 'delivered',
   });
+  // Structured row for the Calls page (unique on vapi_call_id).
+  await sb.from('voice_calls').upsert(
+    {
+      user_id: owner.user_id,
+      vapi_call_id: report.callId,
+      caller_phone: report.callerDigits ? `+${report.callerDigits}` : null,
+      contact_id: contactId,
+      conversation_id: conversationId,
+      duration_seconds: report.durationSeconds,
+      ended_reason: report.endedReason,
+      summary: report.summary,
+      transcript: report.transcript,
+      recording_url: report.recordingUrl,
+    },
+    { onConflict: 'vapi_call_id', ignoreDuplicates: true },
+  );
   await sb
     .from('conversations')
     .update({
