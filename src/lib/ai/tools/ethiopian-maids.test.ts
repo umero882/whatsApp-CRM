@@ -93,6 +93,7 @@ describe('saveMatchAlert.handler', () => {
       conversationId: 'conv-1',
       contactPhone: '+971585868560',
       contactName: 'Ahmed',
+      channel: 'whatsapp',
       escalationPhone: null,
       hasuraUrl: null,
       hasuraAdminSecret: null,

@@ -263,8 +263,22 @@ function ConversationItem({
       {/* Content */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
-          <span className="truncate text-sm font-medium text-white">
-            {displayName}
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-sm font-medium text-white">
+              {displayName}
+            </span>
+            {conversation.channel && conversation.channel !== "whatsapp" && (
+              <span
+                title={conversation.channel}
+                className="shrink-0 rounded bg-slate-700 px-1 py-px text-[9px] uppercase tracking-wide text-slate-300"
+              >
+                {conversation.channel === "instagram"
+                  ? "IG"
+                  : conversation.channel === "messenger"
+                    ? "MSGR"
+                    : "TG"}
+              </span>
+            )}
           </span>
           <span className="shrink-0 text-[10px] text-slate-500">{timeAgo}</span>
         </div>
