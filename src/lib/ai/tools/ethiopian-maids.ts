@@ -13,6 +13,7 @@
  */
 
 import { makeHasuraClient, HasuraError } from './hasura';
+import { normalizeAlertCriteria, type AlertLanguage, type MatchSide } from '../matching';
 import { notifyAdminOfEscalation } from '../escalation-notify';
 import { sendCtaUrlMessage, sendImageMessage, sendTextMessage } from '@/lib/whatsapp/meta-api';
 import { sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
@@ -143,7 +144,7 @@ export const searchMaids: ToolHandler = {
         maids,
         note:
           maids.length === 0
-            ? 'No matching candidates with these criteria. Offer to broaden (drop salary cap, drop language/skill filter) or take their details.'
+            ? 'No matching candidates with these criteria. Offer TWO options: (1) broaden the search (drop salary cap, drop language/skill filter), or (2) a match alert — if the customer agrees, call save_match_alert with side="sponsor" and these criteria so we message them the moment a matching candidate becomes available.'
             : 'Recommend at most 2-3 of these candidates. Mention first name, nationality/country, experience years, key skills, and the salary range. If a photo_url exists, mention "I can share a photo if you\'d like".',
       };
     } catch (e) {
@@ -310,7 +311,7 @@ export const listJobs: ToolHandler = {
         count: jobs.length,
         jobs,
         note: jobs.length === 0
-          ? 'No active jobs match these criteria. Offer to broaden the search (different city/country, drop experience filter) or take the maid\'s details so our team contacts her when a matching role opens.'
+          ? 'No active jobs match these criteria. Offer TWO options: (1) broaden the search (different city/country, drop experience filter), or (2) a job alert — if the customer agrees, call save_match_alert with side="maid" and these criteria so we message her the moment a matching job opens.'
           : 'Present 1-3 of these jobs to the customer with: title, city/country, salary range with currency, live-in or live-out, key required skills. Ask which one she\'d like to apply for or want more detail on.',
       };
     } catch (e) {
@@ -1285,6 +1286,116 @@ export const bookInterview: ToolHandler = {
   },
 };
 
+// ----------------------------------------------------------------
+// save_match_alert — persist a saved search so the engagement cron
+// (/api/ai/engagement/cron) can proactively message the customer when
+// NEW matching maids (sponsor side) or jobs (maid side) appear. This
+// is the two-sided matching loop: an empty search today becomes a
+// WhatsApp notification the day the marketplace catches up.
+// ----------------------------------------------------------------
+
+export const saveMatchAlert: ToolHandler = {
+  name: 'save_match_alert',
+  description:
+    'Save a match alert so we automatically message this customer on WhatsApp when NEW matches appear (checked continuously for 30 days). ' +
+    'Use when search_maids or list_jobs returned nothing suitable AND the customer agreed to be notified, or when they explicitly ask to be told about future candidates/jobs. ' +
+    'side="sponsor" watches for new maids matching their criteria; side="maid" watches for new job openings. ' +
+    'Pass every criterion the customer gave — omitted fields mean "any". ' +
+    'After it succeeds, confirm in ONE short sentence that we\'ll message them here the moment a match arrives.',
+  parameters: {
+    type: 'object',
+    properties: {
+      side: {
+        type: 'string',
+        enum: ['sponsor', 'maid'],
+        description: 'sponsor = customer wants a maid (alert on new candidates). maid = customer wants a job (alert on new openings).',
+      },
+      language: {
+        type: 'string',
+        enum: ['en', 'ar', 'am'],
+        description: 'Language for the future notification, matching the conversation. Default en.',
+      },
+      live_in: {
+        type: 'boolean',
+        description: 'Live-in (true) or live-out (false). Applies to both sides. Omit if not specified.',
+      },
+      languages: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Sponsor side: languages the maid should speak, e.g. ["English","Arabic"].',
+      },
+      skills: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Sponsor side: required skills, e.g. ["childcare","cooking"].',
+      },
+      min_experience_years: {
+        type: 'number',
+        description: 'Sponsor side: minimum years of experience.',
+      },
+      max_salary_aed: {
+        type: 'number',
+        description: 'Sponsor side: maximum monthly salary in AED.',
+      },
+      country: {
+        type: 'string',
+        description: 'Maid side: destination country, e.g. "UAE".',
+      },
+      city: {
+        type: 'string',
+        description: 'Maid side: destination city, e.g. "Dubai".',
+      },
+      maid_experience_years: {
+        type: 'number',
+        description: 'Maid side: the maid\'s own years of experience (jobs requiring more are excluded).',
+      },
+    },
+    required: ['side'],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const side = (args.side === 'maid' ? 'maid' : 'sponsor') as MatchSide;
+    const language = (['en', 'ar', 'am'].includes(String(args.language))
+      ? String(args.language)
+      : 'en') as AlertLanguage;
+    const criteria = normalizeAlertCriteria(side, args);
+
+    // One active alert per conversation + side: replace, don't stack.
+    const { error: cancelErr } = await ctx.supabase
+      .from('ai_match_alerts')
+      .update({ status: 'cancelled' })
+      .eq('conversation_id', ctx.conversationId)
+      .eq('side', side)
+      .eq('status', 'active');
+    if (cancelErr) {
+      return { error: `Could not replace the existing alert: ${cancelErr.message}` };
+    }
+
+    const { error: insertErr } = await ctx.supabase.from('ai_match_alerts').insert({
+      user_id: ctx.userId,
+      conversation_id: ctx.conversationId,
+      recipient_phone: ctx.contactPhone,
+      side,
+      criteria,
+      language,
+    });
+    if (insertErr) {
+      return { error: `Could not save the alert: ${insertErr.message}` };
+    }
+
+    return {
+      ok: true,
+      side,
+      criteria,
+      note:
+        'Alert saved — we check continuously for 30 days and will message the customer here as soon as a match arrives. ' +
+        'Confirm in ONE short sentence (e.g. "Done! I\'ll message you here the moment a matching ' +
+        (side === 'sponsor' ? 'candidate' : 'job') +
+        ' becomes available 🌸"). Do not promise an exact date.',
+    };
+  },
+};
+
 export const ETHIOPIAN_MAIDS_TOOLS: ToolHandler[] = [
   searchMaids,
   getMaidProfile,
@@ -1293,5 +1404,6 @@ export const ETHIOPIAN_MAIDS_TOOLS: ToolHandler[] = [
   bookInterview,
   listJobs,
   getPricing,
+  saveMatchAlert,
   escalateToHuman,
 ];

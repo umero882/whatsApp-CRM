@@ -554,10 +554,10 @@ function buildCustomerContext(
 // Language detection (lightweight, no extra deps)
 // ════════════════════════════════════════════════════════════════════
 
-type Lang = 'English' | 'Arabic' | 'Amharic' | 'Urdu' | 'Hindi';
+export type Lang = 'English' | 'Arabic' | 'Amharic' | 'Urdu' | 'Hindi';
 
 /** Conversation language → app-card copy language. */
-const CARD_LANG: Record<Lang, AppCardLanguage> = {
+export const CARD_LANG: Record<Lang, AppCardLanguage> = {
   English: 'en',
   Arabic: 'ar',
   Amharic: 'am',
@@ -590,7 +590,7 @@ function cardPointerLine(lang: Lang): string {
   return 'Tap the button above to get our official app 🌸';
 }
 
-function detectLanguage(text: string): Lang {
+export function detectLanguage(text: string): Lang {
   if (!text) return 'English';
   // Amharic uses Ethiopic script (U+1200–U+137F)
   if (/[ሀ-፿]/.test(text)) return 'Amharic';
