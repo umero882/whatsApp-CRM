@@ -288,6 +288,10 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
 
   // ─── Loop ───────────────────────────────────────────────────────────
   const toolsUsed: string[] = [];
+  // Set once a SELF_DELIVERING tool has successfully put this turn's
+  // customer-facing message in the chat. From that point on, NOTHING
+  // else may be sent — no holding lines, no extra model text.
+  let selfDelivered = false;
   for (let turn = 0; turn < agent.max_turns; turn++) {
     let result;
     try {
@@ -300,6 +304,11 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     } catch (e) {
       if (e instanceof ProviderError) {
         console.error('[ai-agent] provider failed:', e.message);
+        if (selfDelivered) {
+          // The customer already has the tappable question — a holding
+          // line on top would read as a confusing second message.
+          return { kind: 'replied', text: '[interactive choices]', stage, turns: turn + 1, toolsUsed };
+        }
         await postAndPersist(sb, waCfg, accessToken, contact, conv.id,
           stageHoldingReply(stage, language));
         return { kind: 'failed', reason: `provider: ${e.message}` };
@@ -331,13 +340,6 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
         }
       }
       if (!text) {
-        // A self-delivering tool (reply_with_choices) already put this
-        // turn's message in the customer's chat — empty final text is
-        // the instructed, correct outcome. Finish without sending more.
-        if (toolsUsed.some((t) => SELF_DELIVERING_TOOLS.has(t))) {
-          console.log('[ai-agent] turn complete via self-delivering tool, no trailing text');
-          return { kind: 'replied', text: '[interactive choices]', stage, turns: turn + 1, toolsUsed };
-        }
         // Empty content with no tool calls — extremely rare but seen
         // when models go offline mid-response. Retry once with a
         // forceful instruction; if that also fails, send the stage-
@@ -349,6 +351,28 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
           content: 'Reply now in plain text. One short sentence. Do not call a tool.',
         });
         continue;
+      }
+      // Deterministic guard (same philosophy as stripCardNarration):
+      // models sometimes WRITE the answer options as a text list
+      // ("▸ Childcare\n▸ Cooking") instead of calling reply_with_choices.
+      // Detect that shape and send real tappable options instead.
+      if (!toolsUsed.includes('reply_with_choices')) {
+        const extracted = extractChoicesFromText(text);
+        const choicesTool = extracted ? findTool(stageTools, 'reply_with_choices') : undefined;
+        if (extracted && choicesTool) {
+          try {
+            const r = (await choicesTool.handler(
+              { body_text: extracted.body, options: extracted.options }, toolCtx,
+            )) as { ok?: boolean };
+            if (r?.ok) {
+              toolsUsed.push('reply_with_choices');
+              console.warn('[ai-agent] model wrote options as text — server sent tappable choices instead');
+              return { kind: 'replied', text: `[interactive choices] ${extracted.body}`, stage, turns: turn + 1, toolsUsed };
+            }
+          } catch (e) {
+            console.warn('[ai-agent] choices guard failed, sending plain text:', e instanceof Error ? e.message : e);
+          }
+        }
       }
       console.log('[ai-agent] turn', turn + 1, 'reply:', text.slice(0, 120));
       await postAndPersist(sb, waCfg, accessToken, contact, conv.id, text);
@@ -387,16 +411,35 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
       }
       const summary = safeJsonString(resultJson).slice(0, 200);
       console.log('[ai-agent]   →', call.name, 'result:', summary);
+      if (
+        SELF_DELIVERING_TOOLS.has(call.name) &&
+        resultJson && typeof resultJson === 'object' &&
+        (resultJson as { ok?: unknown }).ok === true
+      ) {
+        selfDelivered = true;
+      }
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
         content: safeJsonString(resultJson),
       });
     }
+
+    // A self-delivering tool succeeded — the customer already has this
+    // turn's message. End the run HERE: another provider round-trip can
+    // only add cost and failure modes (a stray trailing sentence, or a
+    // holding line if the provider call errors).
+    if (selfDelivered) {
+      console.log('[ai-agent] turn complete via self-delivering tool');
+      return { kind: 'replied', text: '[interactive choices]', stage, turns: turn + 1, toolsUsed };
+    }
   }
 
   // Loop exhausted — stage-aware holding reply
   console.warn('[ai-agent] max_turns reached without final reply');
+  if (selfDelivered) {
+    return { kind: 'replied', text: '[interactive choices]', stage, turns: agent.max_turns, toolsUsed };
+  }
   await postAndPersist(sb, waCfg, accessToken, contact, conv.id,
     stageHoldingReply(stage, language));
   return { kind: 'failed', reason: 'max_turns_exceeded' };
@@ -604,6 +647,41 @@ function cardPointerLine(lang: Lang): string {
   return 'Tap the button above to get our official app 🌸';
 }
 
+/**
+ * Detect a final reply that WRITES fixed answer options as a trailing
+ * text list ("What duties?\n▸ Childcare\n▸ Cooking") instead of calling
+ * reply_with_choices. Returns the split body + options when the shape
+ * is unambiguous, else null. Pure — exported for tests.
+ *
+ * Deliberately conservative: 2-10 trailing bullet/numbered lines, each
+ * ≤30 chars (real option labels are short; prose lists and job/candidate
+ * summaries are long), preceded by a body that asks something.
+ */
+export function extractChoicesFromText(
+  text: string,
+): { body: string; options: string[] } | null {
+  const lines = text.split('\n').map((l) => l.trim());
+  const optRe = /^(?:[-•▸*›‣◦]|\d{1,2}[.)])\s*(.+)$/;
+  let i = lines.length - 1;
+  while (i >= 0 && !lines[i]) i--;
+  const options: string[] = [];
+  while (i >= 0) {
+    const m = lines[i].match(optRe);
+    if (!m) break;
+    const value = m[1].trim();
+    if (!value || value.length > 30) return null;
+    options.unshift(value);
+    i--;
+  }
+  if (options.length < 2 || options.length > 10) return null;
+  const body = lines.slice(0, i + 1).join(' ').replace(/\s+/g, ' ').trim();
+  if (!body) return null;
+  // Body must actually be asking for a pick — guards against stray
+  // bullet fragments in informational replies.
+  if (!body.includes('?') && !/[:：]$/.test(body)) return null;
+  return { body, options };
+}
+
 export function detectLanguage(text: string): Lang {
   if (!text) return 'English';
   // Amharic uses Ethiopic script (U+1200–U+137F)
@@ -775,7 +853,7 @@ const OPERATING_DIRECTIVE = `═══ OPERATING RULES ═══
 • ONE WhatsApp message per turn. No multi-part bursts.
 • Use the customer's name once you know it. Never "Dear Sir/Madam".
 • ONE question per turn at most. Don't interrogate.
-• CHOICES ARE TAPPED, NOT TYPED: whenever your question has 2–10 fixed answers (yes/no, registered/new, live-in/live-out, picking a candidate or time), call reply_with_choices (available in every stage) — the customer taps an option instead of typing. The tool message IS your reply: after it succeeds, output an EMPTY final message and never repeat the options as text. Open-ended questions (name, city, dates, budgets) stay plain text.
+• CHOICES ARE TAPPED, NOT TYPED: whenever your question has 2–10 fixed answers (yes/no, registered/new, live-in/live-out, picking a candidate or time), call reply_with_choices (available in every stage) — the customer taps an option instead of typing. The tool message IS your reply: after it succeeds, output an EMPTY final message and never repeat the options as text. NEVER write answer options inside your text as bullets, dashes, or numbered lines — that is ALWAYS a reply_with_choices call. Open-ended questions (name, city, dates, budgets) stay plain text.
 • NEVER invent candidates, prices, availability, or policies. Use the tools when they're enabled.
 • NEVER share a maid's full name, passport number, exact location, or phone before a confirmed booking.
 • We place Ethiopian domestic workers in the GCC only. Politely decline anything else.
@@ -821,6 +899,21 @@ export function stringifyHistoryMessage(m: HistoryRow): string {
   if (m.ai_media_summary && m.ai_media_summary.trim()) {
     const label = m.content_type === 'image' ? 'photo' : m.content_type === 'audio' ? 'voice note' : m.content_type;
     return `[${label}] ${m.ai_media_summary.trim()}`;
+  }
+  // Our own interactive choices messages are persisted as
+  // "body\n▸ Option\n▸ Option". Presented raw, models IMITATE that
+  // style in plain text instead of calling reply_with_choices — so
+  // re-frame them as an explicit tool artifact.
+  if (m.sender_type === 'agent' && text.includes('\n▸ ')) {
+    const lines = text.split('\n');
+    const options = lines
+      .filter((l) => l.trimStart().startsWith('▸'))
+      .map((l) => l.replace(/^\s*▸\s*/, '').trim())
+      .filter(Boolean);
+    const body = lines.filter((l) => !l.trimStart().startsWith('▸')).join(' ').trim();
+    if (options.length > 0 && body) {
+      return `[you sent tappable options via reply_with_choices] ${body} [options: ${options.join(' | ')}]`;
+    }
   }
   if (text) return text;
   return `[${m.content_type ?? 'message'}]`;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { stripCardNarration, stringifyHistoryMessage } from './agent';
+import { extractChoicesFromText, stripCardNarration, stringifyHistoryMessage } from './agent';
 
 describe('stripCardNarration', () => {
   it('leaves normal replies untouched', () => {
@@ -55,5 +55,63 @@ describe('stringifyHistoryMessage — media', () => {
       ai_media_summary: null, created_at: '2026-07-11T00:00:00Z',
     } as never);
     expect(s).toBe('[image]');
+  });
+});
+
+describe('extractChoicesFromText', () => {
+  it('extracts the exact production failure: duties list with ▸ bullets', () => {
+    const r = extractChoicesFromText(
+      'What will be the main duties for the maid?\n▸ Childcare\n▸ Cooking\n▸ Elderly care\n▸ General housework',
+    );
+    expect(r).toEqual({
+      body: 'What will be the main duties for the maid?',
+      options: ['Childcare', 'Cooking', 'Elderly care', 'General housework'],
+    });
+  });
+
+  it('extracts numbered and dashed lists', () => {
+    expect(extractChoicesFromText('Live-in or live-out?\n1. Live-in\n2) Live-out')).toEqual({
+      body: 'Live-in or live-out?',
+      options: ['Live-in', 'Live-out'],
+    });
+    expect(extractChoicesFromText('Please choose:\n- Yes, alert me\n- Widen the search')).toEqual({
+      body: 'Please choose:',
+      options: ['Yes, alert me', 'Widen the search'],
+    });
+  });
+
+  it('leaves normal replies and prose lists alone', () => {
+    expect(extractChoicesFromText('Welcome to Ethiopian Maids 🌸 How can I help you today?')).toBeNull();
+    // Single bullet — not a choice set.
+    expect(extractChoicesFromText('Note:\n- We only place Ethiopian workers')).toBeNull();
+    // Long lines are summaries (jobs/candidates), not option labels.
+    expect(extractChoicesFromText(
+      'Here are the openings I found:\n1. Nanny — Dubai, 1,400–1,600 AED/mo, live-in required\n2. Housekeeper — Abu Dhabi, 1,500 AED/mo, live-out preferred',
+    )).toBeNull();
+    // Bullets without a question/colon body — informational, keep as text.
+    expect(extractChoicesFromText('We offer these services\n- Cleaning\n- Cooking')).toBeNull();
+  });
+});
+
+describe('stringifyHistoryMessage — interactive choices rendering', () => {
+  it('re-frames our persisted ▸ options as a tool artifact so models do not imitate it', () => {
+    const out = stringifyHistoryMessage({
+      sender_type: 'agent',
+      content_type: 'interactive',
+      content_text: 'Do you prefer a live-in or live-out maid?\n▸ Live-in\n▸ Live-out',
+      created_at: '2026-07-12T08:00:00Z',
+    });
+    expect(out).toBe(
+      '[you sent tappable options via reply_with_choices] Do you prefer a live-in or live-out maid? [options: Live-in | Live-out]',
+    );
+  });
+
+  it('leaves customer messages and plain agent text untouched', () => {
+    expect(stringifyHistoryMessage({
+      sender_type: 'customer',
+      content_type: 'text',
+      content_text: 'Dubai',
+      created_at: '2026-07-12T08:00:00Z',
+    })).toBe('Dubai');
   });
 });
