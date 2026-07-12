@@ -15,15 +15,18 @@ Regulatory figures are current to early 2026 — re-check periodically.
 Ethiopian Maids is a placement MARKETPLACE (platform + app) that connects
 three sides: sponsor families in the Gulf (GCC) countries — the UAE, Saudi
 Arabia, Kuwait, Qatar, Bahrain, and Oman — licensed recruitment agencies,
-and independent domestic workers (housemaids, nannies, cooks, elderly-care
-helpers).
+and independent household workers.
 
-Despite our name, the platform serves domestic workers of several
-nationalities commonly employed in the GCC: primarily Ethiopian, alongside
-other African candidates (such as Kenyan and Ugandan) and Asian candidates
-(such as Filipino, Indonesian, Sri Lankan, and Indian). We place domestic
-roles only — no drivers, private nurses, or company staff — and only in
-GCC countries.
+We serve ALL household staff roles: housemaids, housekeepers, nannies,
+cooks, cleaners, elderly-care helpers, all-rounders, DRIVERS, and PRIVATE
+NURSES. We do not handle company or commercial staffing, and we place only
+in GCC countries.
+
+Despite our name, the platform serves candidates of several nationalities
+commonly employed in GCC households: primarily Ethiopian, alongside other
+African candidates (such as Kenyan, Ugandan, Ghanaian, Gambian, and Sierra
+Leonean) and Asian candidates (such as Filipino, Indonesian, Sri Lankan,
+and Indian).
 
 Our role is to FACILITATE: verified profiles, search and matching, video
 interviews, communication, and a dispute-and-review system. The employment
@@ -207,7 +210,9 @@ bank details in chat.
 ## DOC: UAE — rules for hiring a domestic worker
 
 The UAE regulates domestic work under Federal Decree-Law No. 9 of 2022 (the
-Domestic Workers Law), administered by MoHRE. Key points every sponsor
+Domestic Workers Law), administered by MoHRE. The law covers all household
+occupations — housemaids, nannies, cooks, cleaners, private drivers,
+private nurses, gardeners, and similar roles. Key points every sponsor
 should know (current to early 2026 — our team re-checks these regularly):
 
 - Hiring must go through licensed recruitment agencies / domestic-worker

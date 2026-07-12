@@ -474,10 +474,10 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
 type Intent = 'sponsor' | 'job_seeker' | 'unknown';
 
 const SPONSOR_PATTERNS = [
-  /\b(i\s*(need|want|am\s*looking\s*for|require)\s*(a\s*)?(maid|nanny|housekeeper|domestic|helper|cook|elderly\s*care|cleaner|sirvienta|sirvient|خادم|مربية))\b/i,
+  /\b(i\s*(need|want|am\s*looking\s*for|require)\s*(a\s*)?(maid|nanny|housekeeper|domestic|helper|cook|elderly\s*care|cleaner|driver|nurse|caregiver|sirvienta|sirvient|خادم|مربية))\b/i,
   /\b(hire|hiring|to\s*hire|want\s*to\s*hire|looking\s*to\s*hire)\b/i,
   /\b(for\s*my\s*(kids|children|baby|family|parents|home|house))\b/i,
-  /\b(احتاج|ابغى|اريد|اطلب|ابحث\s*عن).*(خادم|مربية|عاملة)/i,
+  /\b(احتاج|ابغى|اريد|اطلب|ابحث\s*عن).*(خادم|مربية|عاملة|سائق|ممرضة)/i,
 ];
 
 const JOB_SEEKER_PATTERNS = [
@@ -564,7 +564,7 @@ function detectStage(history: HistoryRow[], intent: Intent): Stage {
   // Intent-aware: how much do we need before RECOMMENDATION?
   // Heuristic: enough info ≈ 2+ customer turns AND specific criteria
   // mentioned. Otherwise stay in QUALIFICATION so tools remain gated.
-  const hasSponsorCriteria = /\b(dubai|abu\s*dhabi|sharjah|ajman|fujairah|ras\s*al\s*khaimah|umm\s*al\s*quwain|live[\s-]*in|live[\s-]*out|cook|cleaning|childcare|elderly|nanny|babys|housekeep|housekeeper)\b/i.test(
+  const hasSponsorCriteria = /\b(dubai|abu\s*dhabi|sharjah|ajman|fujairah|ras\s*al\s*khaimah|umm\s*al\s*quwain|live[\s-]*in|live[\s-]*out|cook|cleaning|childcare|elderly|nanny|babys|housekeep|housekeeper|driver|driving|nurse|nursing)\b/i.test(
     customerTexts.join(' '),
   );
   const hasJobSeekerCriteria = /\b(ethiopia|addis|kenya|uganda|dubai|uae|saudi|abu\s*dhabi|kuwait|qatar|bahrain|oman|years?\s*(of\s*)?experience|childcare|cook|cleaning|elderly)\b/i.test(
@@ -897,7 +897,7 @@ const OPERATING_DIRECTIVE = `═══ OPERATING RULES ═══
 • NEVER invent candidates, prices, availability, or policies. Use the tools when they're enabled.
 • KNOWLEDGE: questions about how our service works — visa process, timelines, what fees include, refunds/replacements, medical checks, trial periods, required documents — go through search_knowledge_base FIRST (available in every stage). Answer ONLY from the returned passages; when nothing is found, say you'll confirm with our team. NEVER answer policy from memory.
 • NEVER share a maid's full name, passport number, exact location, or phone before a confirmed booking.
-• We are a placement MARKETPLACE connecting sponsors, licensed agencies, and domestic workers for GCC households — primarily Ethiopian candidates plus other African and Asian nationalities common in GCC domestic work. Decline non-domestic roles and non-GCC destinations.
+• We are a placement MARKETPLACE connecting sponsors, licensed agencies, and household workers for GCC households — primarily Ethiopian candidates plus other African and Asian nationalities common in GCC household work. We serve ALL household staff roles: maids, housekeepers, nannies, cooks, cleaners, elderly-care helpers, drivers, and private nurses. Decline only non-household staffing and non-GCC destinations.
 • Fees, replacement, refunds, contract duration, cancellation, sick leave: agreed between SPONSOR and AGENCY under the destination country's domestic-worker rules (the source of truth). NEVER promise such terms on the platform's behalf — answer via search_knowledge_base and advise confirming with the agency in writing.
 • REGISTRATION POLICY: sign-up, profile creation, and job applications happen in the Ethiopian Maids app — never over chat. New customers get the official download card via send_app_download_card — NEVER a pasted store URL (customers fear scam links). Chat is for customer service.
 
