@@ -21,6 +21,7 @@ import {
   Clock,
   ArrowLeft,
   RefreshCw,
+  Phone,
 } from "lucide-react";
 import { format, isToday, isYesterday, differenceInHours } from "date-fns";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +38,7 @@ import { MessageActions } from "./message-actions";
 import { MessageComposer } from "./message-composer";
 import { AICopilotPanel } from "./ai-copilot-panel";
 import { TemplatePicker } from "./template-picker";
+import { OutboundCallDialog } from "@/components/calls/outbound-call-dialog";
 import { buildReplyPreview } from "./reply-quote";
 import { toast } from "sonner";
 
@@ -149,6 +151,7 @@ export function MessageThread({
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
+  const [callDialogOpen, setCallDialogOpen] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
   // Purely visual spin state for the manual-refresh button. The actual
@@ -744,6 +747,18 @@ export function MessageThread({
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Voice call — Lucy dials this contact from the CS line and
+              the result lands back in this same timeline. */}
+          <button
+            type="button"
+            onClick={() => setCallDialogOpen(true)}
+            aria-label={`Call ${displayName}`}
+            title="Call via Lucy"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+          >
+            <Phone className="h-3.5 w-3.5" />
+          </button>
+
           {/* Manual refresh — forces a refetch of the messages + the
               conversation list (the parent bumps its resyncToken). Useful
               when realtime missed an event or the agent just wants to be
@@ -943,6 +958,12 @@ export function MessageThread({
         open={templateModalOpen}
         onOpenChange={setTemplateModalOpen}
         onSelect={handleSendTemplate}
+      />
+
+      <OutboundCallDialog
+        open={callDialogOpen}
+        onOpenChange={setCallDialogOpen}
+        target={{ contactId: contact.id, name: contact.name, phone: contact.phone }}
       />
     </div>
   );

@@ -128,4 +128,20 @@ describe('formatCallLogMessage', () => {
     expect(text).toContain('…');
     expect(text.length).toBeLessThan(4400);
   });
+
+  it('labels outbound calls as Lucy-placed', () => {
+    const text = formatCallLogMessage(
+      {
+        callId: 'c',
+        callerDigits: '971585868560',
+        endedReason: null,
+        durationSeconds: 65,
+        summary: null,
+        transcript: null,
+        recordingUrl: null,
+      },
+      'outbound',
+    );
+    expect(text).toContain('📞 Outbound call (Lucy) — 1 min 5 sec');
+  });
 });

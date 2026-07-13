@@ -18,6 +18,7 @@ import {
   parseVapiToolCalls,
   speakableKbAnswer,
   vapiResult,
+  type CallDirection,
 } from '@/lib/ai/vapi-tools';
 
 /**
@@ -37,110 +38,141 @@ export const dynamic = 'force-dynamic';
 const EPOCH = '1970-01-01T00:00:00.000Z';
 
 /**
- * Persist a finished voice call into the caller's conversation so calls
- * and chats share one timeline. Caller matching is by phone-digit
- * suffix (WhatsApp calls arrive from the same number the customer
- * chats from); unknown callers get a fresh contact + conversation.
- * Idempotent per Vapi call id (message_id = "vapi:<callId>").
+ * Persist a finished voice call: a structured `voice_calls` row for the
+ * Calls page, plus — for calls with a real phone number — a message in
+ * the caller's conversation so calls and chats share one timeline.
+ * Browser test calls ("web") stay out of the inbox. Outbound calls
+ * merge into the queued row /api/calls/outbound pre-created.
+ * Idempotent per Vapi call id (status check + message_id "vapi:<callId>").
  */
 async function logCallToInbox(report: import('@/lib/ai/vapi-tools').VapiCallReport): Promise<void> {
   const sb = supabaseAdmin();
   const messageId = `vapi:${report.callId}`;
 
-  // Dedupe — Vapi retries webhooks.
-  const { data: dupe } = await sb
-    .from('messages')
-    .select('id')
-    .eq('message_id', messageId)
+  const { data: existing, error: lookupError } = await sb
+    .from('voice_calls')
+    .select('id, user_id, direction, status, contact_id, conversation_id')
+    .eq('vapi_call_id', report.callId)
     .maybeSingle();
-  if (dupe) return;
+  if (lookupError) {
+    console.warn('[vapi-tools] voice_calls lookup failed:', lookupError.message);
+  }
+  // Webhook retry after we already stored the report — nothing to do.
+  if (existing?.status === 'completed') return;
+
+  const direction: CallDirection =
+    (existing?.direction as CallDirection | null) ??
+    (report.callerDigits ? 'inbound' : 'web');
 
   const { data: owner } = await sb
     .from('whatsapp_config')
     .select('user_id')
     .limit(1)
     .maybeSingle();
-  if (!owner) return;
+  const userId: string | null = existing?.user_id ?? owner?.user_id ?? null;
+  if (!userId) return;
 
-  // Match the caller to an existing contact by last-8-digit suffix.
-  let contactId: string | null = null;
-  let conversationId: string | null = null;
-  if (report.callerDigits) {
-    const suffix = report.callerDigits.slice(-8);
-    const { data: contact } = await sb
-      .from('contacts')
-      .select('id')
-      .eq('user_id', owner.user_id)
-      .like('phone', `%${suffix}`)
-      .limit(1)
-      .maybeSingle();
-    contactId = contact?.id ?? null;
-  }
-  if (!contactId) {
-    const phone = report.callerDigits ? `+${report.callerDigits}` : `voice:${report.callId.slice(0, 8)}`;
-    const { data: created } = await sb
-      .from('contacts')
-      .insert({
-        user_id: owner.user_id,
-        phone,
-        name: report.callerDigits ? `Voice caller ${phone}` : 'Voice caller',
-      })
-      .select('id')
-      .single();
-    contactId = created?.id ?? null;
-  }
-  if (!contactId) return;
+  let contactId: string | null = existing?.contact_id ?? null;
+  let conversationId: string | null = existing?.conversation_id ?? null;
 
-  const { data: conv } = await sb
-    .from('conversations')
-    .select('id')
-    .eq('user_id', owner.user_id)
-    .eq('contact_id', contactId)
-    .maybeSingle();
-  conversationId = conv?.id ?? null;
-  if (!conversationId) {
-    const { data: newConv } = await sb
-      .from('conversations')
-      .insert({ user_id: owner.user_id, contact_id: contactId, channel: 'whatsapp' })
-      .select('id')
-      .single();
-    conversationId = newConv?.id ?? null;
+  // Only calls with a real customer number join the inbox timeline —
+  // browser test calls would otherwise pile up junk "Voice caller"
+  // contacts and WhatsApp-channel conversations.
+  if (direction !== 'web') {
+    if (!contactId && report.callerDigits) {
+      // Match by last-8-digit suffix (customers call from the number
+      // they chat from).
+      const suffix = report.callerDigits.slice(-8);
+      const { data: contact } = await sb
+        .from('contacts')
+        .select('id')
+        .eq('user_id', userId)
+        .like('phone', `%${suffix}`)
+        .limit(1)
+        .maybeSingle();
+      contactId = contact?.id ?? null;
+      if (!contactId) {
+        const phone = `+${report.callerDigits}`;
+        const { data: created } = await sb
+          .from('contacts')
+          .insert({ user_id: userId, phone, name: `Voice caller ${phone}` })
+          .select('id')
+          .single();
+        contactId = created?.id ?? null;
+      }
+    }
+    if (contactId && !conversationId) {
+      const { data: conv } = await sb
+        .from('conversations')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('contact_id', contactId)
+        .maybeSingle();
+      conversationId = conv?.id ?? null;
+      if (!conversationId) {
+        const { data: newConv } = await sb
+          .from('conversations')
+          .insert({ user_id: userId, contact_id: contactId, channel: 'whatsapp' })
+          .select('id')
+          .single();
+        conversationId = newConv?.id ?? null;
+      }
+    }
+    if (conversationId) {
+      const { data: dupe } = await sb
+        .from('messages')
+        .select('id')
+        .eq('message_id', messageId)
+        .maybeSingle();
+      if (!dupe) {
+        const { error: msgError } = await sb.from('messages').insert({
+          conversation_id: conversationId,
+          sender_type: 'customer',
+          content_type: 'text',
+          content_text: formatCallLogMessage(report, direction),
+          message_id: messageId,
+          status: 'delivered',
+        });
+        if (msgError) {
+          console.warn('[vapi-tools] call log message insert failed:', msgError.message);
+        } else {
+          await sb
+            .from('conversations')
+            .update({
+              last_message_text: direction === 'outbound' ? '📞 Outbound call' : '📞 Voice call',
+              last_message_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', conversationId);
+        }
+      }
+    }
   }
-  if (!conversationId) return;
 
-  const text = formatCallLogMessage(report);
-  await sb.from('messages').insert({
+  // Structured row for the Calls page (unique on vapi_call_id). The
+  // queued outbound row already knows the number — never null it out.
+  const reportFields = {
+    ...(report.callerDigits ? { caller_phone: `+${report.callerDigits}` } : {}),
+    contact_id: contactId,
     conversation_id: conversationId,
-    sender_type: 'customer',
-    content_type: 'text',
-    content_text: text,
-    message_id: messageId,
-    status: 'delivered',
-  });
-  // Structured row for the Calls page (unique on vapi_call_id).
-  await sb.from('voice_calls').upsert(
-    {
-      user_id: owner.user_id,
-      vapi_call_id: report.callId,
-      caller_phone: report.callerDigits ? `+${report.callerDigits}` : null,
-      contact_id: contactId,
-      conversation_id: conversationId,
-      duration_seconds: report.durationSeconds,
-      ended_reason: report.endedReason,
-      summary: report.summary,
-      transcript: report.transcript,
-      recording_url: report.recordingUrl,
-    },
-    { onConflict: 'vapi_call_id', ignoreDuplicates: true },
-  );
-  await sb
-    .from('conversations')
-    .update({
-      last_message_text: '📞 Voice call',
-      last_message_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', conversationId);
+    duration_seconds: report.durationSeconds,
+    ended_reason: report.endedReason,
+    summary: report.summary,
+    transcript: report.transcript,
+    recording_url: report.recordingUrl,
+    status: 'completed' as const,
+  };
+  const { error: writeError } = existing
+    ? await sb.from('voice_calls').update(reportFields).eq('id', existing.id)
+    : await sb.from('voice_calls').insert({
+        ...reportFields,
+        user_id: userId,
+        vapi_call_id: report.callId,
+        direction,
+      });
+  if (writeError) {
+    console.warn('[vapi-tools] voice_calls write failed:', writeError.message);
+  }
 }
 
 export async function POST(request: Request) {

@@ -35,6 +35,7 @@ import {
   Upload,
   MoreHorizontal,
   Pencil,
+  Phone,
   Trash2,
   Loader2,
   Users,
@@ -44,6 +45,7 @@ import {
 import { ContactForm } from '@/components/contacts/contact-form';
 import { ContactDetailView } from '@/components/contacts/contact-detail-view';
 import { ImportModal } from '@/components/contacts/import-modal';
+import { OutboundCallDialog, type CallTarget } from '@/components/calls/outbound-call-dialog';
 
 const PAGE_SIZE = 25;
 
@@ -70,6 +72,7 @@ export default function ContactsPage() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Contact | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [callTarget, setCallTarget] = useState<CallTarget | null>(null);
 
   // All tags for display
   const [tagsMap, setTagsMap] = useState<Record<string, Tag>>({});
@@ -368,6 +371,20 @@ export default function ContactsPage() {
                         <DropdownMenuItem
                           onClick={(e) => {
                             e.stopPropagation();
+                            setCallTarget({
+                              contactId: contact.id,
+                              name: contact.name,
+                              phone: contact.phone,
+                            });
+                          }}
+                          className="text-slate-300 focus:bg-slate-800 focus:text-white"
+                        >
+                          <Phone className="size-4" />
+                          Call via Lucy
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={(e) => {
+                            e.stopPropagation();
                             openEditForm(contact);
                           }}
                           className="text-slate-300 focus:bg-slate-800 focus:text-white"
@@ -454,6 +471,15 @@ export default function ContactsPage() {
         open={importOpen}
         onOpenChange={setImportOpen}
         onImported={fetchContacts}
+      />
+
+      {/* Outbound call (Lucy) */}
+      <OutboundCallDialog
+        open={callTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setCallTarget(null);
+        }}
+        target={callTarget}
       />
 
       {/* Delete Confirmation */}
