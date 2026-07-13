@@ -113,12 +113,15 @@ export function parseVapiEndOfCall(body: unknown): VapiCallReport | null {
 
 const TRANSCRIPT_CAP = 4000;
 
+export type CallDirection = 'inbound' | 'outbound' | 'web';
+
 /** Inbox-facing text for a completed voice call. Pure — exported for tests. */
-export function formatCallLogMessage(r: VapiCallReport): string {
+export function formatCallLogMessage(r: VapiCallReport, direction: CallDirection = 'inbound'): string {
   const mins = r.durationSeconds !== null
     ? `${Math.floor(r.durationSeconds / 60)} min ${r.durationSeconds % 60} sec`
     : 'duration unknown';
-  const lines = [`📞 Voice call — ${mins}${r.endedReason ? ` (${r.endedReason})` : ''}`];
+  const label = direction === 'outbound' ? 'Outbound call (Lucy)' : 'Voice call';
+  const lines = [`📞 ${label} — ${mins}${r.endedReason ? ` (${r.endedReason})` : ''}`];
   if (r.summary) lines.push('', `Summary: ${r.summary}`);
   if (r.recordingUrl) lines.push('', `Recording: ${r.recordingUrl}`);
   if (r.transcript) {

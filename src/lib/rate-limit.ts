@@ -125,6 +125,10 @@ export const RATE_LIMITS = {
    *  fidget with reactions and a single "swap" is actually two calls
    *  (remove + add) under the hood. */
   react: { limit: 120, windowMs: 60_000 },
+  /** Outbound phone call placed by Lucy. Each one dials a real
+   *  customer, so keep the ceiling low — 6/min is plenty for a human
+   *  clicking "call" and blocks runaway loops. */
+  outboundCall: { limit: 6, windowMs: 60_000 },
 } as const;
 
 /** Test-only helper. Clears the in-memory state so unit tests don't
