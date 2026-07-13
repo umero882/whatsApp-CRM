@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { WebCallWidget } from '@/components/calls/web-call-widget';
-import { OutboundCallDialog } from '@/components/calls/outbound-call-dialog';
+import { OutboundCallDialog, type CallTarget } from '@/components/calls/outbound-call-dialog';
 
 interface VoiceCallRow {
   id: string;
@@ -28,6 +28,7 @@ interface VoiceCallRow {
   direction: 'inbound' | 'outbound' | 'web' | null;
   status: string | null;
   objective: string | null;
+  contact_id: string | null;
   conversation_id: string | null;
   created_at: string;
   contacts: { name: string | null } | null;
@@ -52,6 +53,8 @@ export default function CallsPage() {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [dialerOpen, setDialerOpen] = useState(false);
+  // "Call back" from a history row — pre-fills the dialer with that caller.
+  const [callback, setCallback] = useState<CallTarget | null>(null);
 
   const fetchCalls = useCallback(async () => {
     const { data } = await createClient()
@@ -156,6 +159,21 @@ export default function CallsPage() {
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
+                        {c.caller_phone && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCallback({
+                                contactId: c.contact_id ?? undefined,
+                                name: c.contacts?.name ?? null,
+                                phone: c.caller_phone as string,
+                              })
+                            }
+                            className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                          >
+                            <PhoneOutgoing className="h-3.5 w-3.5" /> Call back
+                          </button>
+                        )}
                         {c.conversation_id && (
                           <Link
                             href={`/inbox?c=${c.conversation_id}`}
@@ -197,7 +215,17 @@ export default function CallsPage() {
         </CardContent>
       </Card>
 
-      <OutboundCallDialog open={dialerOpen} onOpenChange={setDialerOpen} onPlaced={fetchCalls} />
+      <OutboundCallDialog
+        open={dialerOpen || callback !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDialerOpen(false);
+            setCallback(null);
+          }
+        }}
+        target={callback}
+        onPlaced={fetchCalls}
+      />
     </div>
   );
 }
