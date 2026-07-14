@@ -34,13 +34,25 @@ export async function POST(request: Request) {
     const limit = checkRateLimit(`call:${user.id}`, RATE_LIMITS.outboundCall);
     if (!limit.success) return rateLimitResponse(limit);
 
-    const apiKey = process.env.VAPI_API_KEY;
-    const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID;
-    const assistantId =
-      process.env.VAPI_ASSISTANT_ID ?? process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
+    // Computed-key lookups: static `process.env.X` member reads can be
+    // inlined at build time by this Next/Turbopack version, freezing
+    // whatever the BUILD environment had (undefined, for vars added in
+    // Coolify afterwards). process.env[k] with a variable key is always
+    // resolved at request time from the real container env.
+    const envAt = (k: string): string | undefined => process.env[k];
+    const apiKey = envAt('VAPI_API_KEY');
+    const phoneNumberId = envAt('VAPI_PHONE_NUMBER_ID');
+    const assistantId = envAt('VAPI_ASSISTANT_ID') ?? envAt('NEXT_PUBLIC_VAPI_ASSISTANT_ID');
     if (!apiKey || !phoneNumberId || !assistantId) {
+      const missing = [
+        !apiKey && 'VAPI_API_KEY',
+        !phoneNumberId && 'VAPI_PHONE_NUMBER_ID',
+        !assistantId && 'VAPI_ASSISTANT_ID',
+      ]
+        .filter(Boolean)
+        .join(', ');
       return NextResponse.json(
-        { error: 'Outbound calling not configured — set VAPI_API_KEY, VAPI_PHONE_NUMBER_ID, and VAPI_ASSISTANT_ID.' },
+        { error: `Outbound calling not configured — missing at runtime: ${missing}.` },
         { status: 503 },
       );
     }
