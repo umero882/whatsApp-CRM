@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Teach Lucy's `send_app_download_card` tool to send an App Store card to iPhone customers, and stop every card claiming iOS is "coming soon".
+**Goal:** Teach the agent's `send_app_download_card` tool to send an App Store card to iPhone customers, and stop every card claiming iOS is "coming soon".
 
-**Architecture:** Extend the existing pure `buildAppDownloadCard(language)` with a second `platform` param defaulting to `'android'` (so nothing regresses), swap the URL/badge/copy on it, and expose `platform` as an LLM tool parameter so Lucy picks it from the conversation. Apple's badge is SVG and Meta headers reject SVG, so a PNG is self-hosted on `ethiopianmaids.com` first.
+**Architecture:** Extend the existing pure `buildAppDownloadCard(language)` with a second `platform` param defaulting to `'android'` (so nothing regresses), swap the URL/badge/copy on it, and expose `platform` as an LLM tool parameter so the agent picks it from the conversation. Apple's badge is SVG and Meta headers reject SVG, so a PNG is self-hosted on `ethiopianmaids.com` first.
 
 **Tech Stack:** TypeScript, Next.js, vitest, Meta WhatsApp Cloud API (`interactive.cta_url`), sharp (SVG→PNG), Supabase.
 
@@ -93,7 +93,7 @@ git commit -m "feat(web): host Apple App Store badge PNG for WhatsApp card
 
 Meta interactive headers accept PNG/JPEG only, and Apple serves its
 official badge as SVG. Rasterized copy served from our own domain so
-Lucy's iOS download card can render the official artwork."
+the agent's iOS download card can render the official artwork."
 ```
 
 - [ ] **Step 4: Deploy web and verify the badge is live**
@@ -362,7 +362,7 @@ the other store instead."
 
 ---
 
-### Task 3: Expose `platform` to Lucy and fix the handler's reply notes
+### Task 3: Expose `platform` to the agent and fix the handler's reply notes
 
 **Files:**
 - Modify: `C:\dev\WhatsApp CRM\src\lib\ai\tools\ethiopian-maids.ts:619-717`
@@ -373,8 +373,8 @@ the other store instead."
 - Produces: `sendAppDownloadCard.handler` accepts `args.platform` and returns `{ ok, delivered_as, language, platform, note }`.
 
 The handler currently hardcodes "Google Play" in both `note` strings
-(lines 711-714). Those notes tell Lucy what to say next, so an iPhone customer
-would get a card for the App Store followed by Lucy saying "Google Play".
+(lines 711-714). Those notes tell the agent what to say next, so an iPhone customer
+would get a card for the App Store followed by the agent saying "Google Play".
 
 - [ ] **Step 1: Write the failing test**
 
@@ -412,7 +412,7 @@ describe('sendAppDownloadCard.handler', () => {
     );
   }
 
-  it('sends the App Store card and tells Lucy to say App Store', async () => {
+  it('sends the App Store card and tells the agent to say App Store', async () => {
     const sent: Array<Record<string, unknown>> = [];
     stubMetaSend(sent);
 
@@ -535,14 +535,14 @@ Expected: no errors. `pnpm build` catches type errors `vitest` does not.
 ```bash
 cd "/c/dev/WhatsApp CRM"
 git add src/lib/ai/tools/ethiopian-maids.ts src/lib/ai/tools/ethiopian-maids.test.ts
-git commit -m "feat(ai): let Lucy send the App Store card to iPhone users
+git commit -m "feat(ai): let the agent send the App Store card to iPhone users
 
-Adds a platform param to send_app_download_card so Lucy picks the store
+Adds a platform param to send_app_download_card so the agent picks the store
 from the conversation, asking when unsure — the only signal available for
 someone who has not installed the app yet.
 
 Also fixes the handler notes, which hardcoded 'Google Play' and would
-have had Lucy name the wrong store right after an App Store card."
+have had the agent name the wrong store right after an App Store card."
 ```
 
 ---
@@ -562,7 +562,7 @@ The CRM repo ships via PR to `main` (see `#43`, `#44`, `#45`).
 cd "/c/dev/WhatsApp CRM"
 git push -u origin feat/ios-app-download-card
 gh pr create --title "feat(ai): iOS app download card" \
-  --body "Apple approved the iOS app on 2026-07-16. Lucy now sends an App Store card to iPhone customers and no card claims iOS is 'coming soon'.
+  --body "Apple approved the iOS app on 2026-07-16. The agent now sends an App Store card to iPhone customers and no card claims iOS is 'coming soon'.
 
 Spec: docs/superpowers/specs/2026-07-16-ios-app-download-card-design.md
 
@@ -573,7 +573,7 @@ Spec: docs/superpowers/specs/2026-07-16-ios-app-download-card-design.md
 
 Message the live number (+971 58 859 3894) and say: *"Send me the app download, I have an iPhone"*.
 
-Expected: a card with the **Apple badge image**, an **`Open App Store`** button opening `apps.apple.com/us/app/ethiopian-maids/id6762796104`, and the footer **"Also available on Google Play"**. Lucy's follow-up sentence must not say "Google Play".
+Expected: a card with the **Apple badge image**, an **`Open App Store`** button opening `apps.apple.com/us/app/ethiopian-maids/id6762796104`, and the footer **"Also available on Google Play"**. the agent's follow-up sentence must not say "Google Play".
 
 - [ ] **Step 3: Verify the Android card did not regress**
 
@@ -585,7 +585,7 @@ Expected: the **unchanged** Google Play card, footer now reading **"Also availab
 
 Say only: *"Send me the app"*.
 
-Expected: Lucy asks which phone you use before sending, **or** sends the Android card (the safe default). Both are acceptable; a broken/missing card is not.
+Expected: the agent asks which phone you use before sending, **or** sends the Android card (the safe default). Both are acceptable; a broken/missing card is not.
 
 - [ ] **Step 5: Confirm the badge rendered rather than silently degrading**
 

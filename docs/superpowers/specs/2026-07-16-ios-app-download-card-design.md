@@ -4,15 +4,22 @@
 **Status:** Approved, pending implementation plan
 **Repos touched:** `WhatsApp CRM` (primary), `ethiopian-maids-monorepo` (badge asset only)
 
+> **Naming note:** earlier drafts of this spec (and this branch's commit
+> messages) called the WhatsApp agent "Lucy". That was wrong — the name came
+> from the *dormant* WhatsApp stack in `ethiopian-maids-monorepo`. This CRM's
+> WhatsApp agent persona is **Habiba**; "Lucy" is the **voice** agent
+> (`src/app/api/ai/vapi/*`). Prose here now says "the agent" to avoid
+> re-guessing.
+
 ## Problem
 
 The Ethiopian Maids iOS app went live on the App Store today
-(`https://apps.apple.com/us/app/ethiopian-maids/id6762796104`). Lucy's
+(`https://apps.apple.com/us/app/ethiopian-maids/id6762796104`). the agent's
 `send_app_download_card` tool only knows about Google Play, and every
 localized footer still says *"iPhone app coming soon on the App Store"* —
 copy that is now factually wrong in all three languages.
 
-iPhone customers who ask Lucy for the app are currently sent a Google Play
+iPhone customers who ask the agent for the app are currently sent a Google Play
 card they cannot use, plus a footer telling them to wait for an app that
 already shipped.
 
@@ -36,7 +43,7 @@ Anyone extending the card must work here, not in the monorepo.
 1. iPhone customers receive an App Store card with the official Apple badge.
 2. Android behaviour is unchanged.
 3. Footers stop claiming iOS is "coming soon".
-4. Lucy picks the platform from the conversation; asks when unsure.
+4. The agent picks the platform from the conversation; asks when unsure.
 
 ## Non-goals
 
@@ -129,20 +136,20 @@ platform: {
 }
 ```
 
-`required` stays `[]`. Detection happens through the conversation Lucy is
+`required` stays `[]`. Detection happens through the conversation the agent is
 already having — the only channel that can see a user who has not installed
 the app yet.
 
 ### 5. Platform-aware handler notes
 
-`sendAppDownloadCard.handler` returns a `note` telling Lucy what to say after
+`sendAppDownloadCard.handler` returns a `note` telling the agent what to say after
 the card lands. Both branches currently hardcode "Google Play"
 (`ethiopian-maids.ts:711-714`):
 
 > "Official app card with Google Play button is now in the customer's chat…"
 
 Left alone, an iPhone customer would receive an App Store card and then hear
-Lucy say "Google Play". The notes must interpolate the store name:
+The agent say "Google Play". The notes must interpolate the store name:
 
 ```ts
 const storeName = platform === 'ios' ? 'App Store' : 'Google Play';
@@ -204,5 +211,5 @@ Extend `src/lib/ai/tools/ethiopian-maids.test.ts` (vitest, `pnpm test`):
 |---|---|
 | Meta cannot fetch the Apple PNG | Existing `card_no_image` fallback still delivers |
 | Badge deployed after CRM change | Step 1 gates step 2 |
-| Lucy guesses platform wrong | Footer names the other store; customer can still self-correct |
+| the agent guesses platform wrong | Footer names the other store; customer can still self-correct |
 | Arabic/Amharic footer >60 chars | Asserted in tests |

@@ -286,7 +286,7 @@ describe('sendAppDownloadCard.handler', () => {
     );
   }
 
-  it('sends the App Store card and tells Lucy to say App Store', async () => {
+  it('sends the App Store card and tells the agent to say App Store', async () => {
     const sent: Array<Record<string, unknown>> = [];
     stubMetaSend(sent);
 
