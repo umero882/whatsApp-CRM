@@ -393,12 +393,28 @@ describe('sendAppDownloadCard.handler', () => {
     } as unknown as ToolContext;
   }
 
+  /**
+   * Mock Meta's send endpoint the way the rest of this repo does
+   * (`vi.stubGlobal` + a plain object). `sendCtaUrlMessage` only reads
+   * `.ok`, `.status` and `.json()` — see meta-api.ts:222-226.
+   */
+  function stubMetaSend(sent: Array<Record<string, unknown>>) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { body?: string }) => {
+        sent.push(JSON.parse(String(init.body)));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ messages: [{ id: 'wamid.test' }] }),
+        };
+      }),
+    );
+  }
+
   it('sends the App Store card and tells Lucy to say App Store', async () => {
     const sent: Array<Record<string, unknown>> = [];
-    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
-      sent.push(JSON.parse(String((init as RequestInit).body)));
-      return new Response(JSON.stringify({ messages: [{ id: 'wamid.1' }] }), { status: 200 });
-    });
+    stubMetaSend(sent);
 
     const supa = mockSupabase();
     const res = await sendAppDownloadCard.handler({ language: 'en', platform: 'ios' }, ctxFor(supa.client));
@@ -412,10 +428,7 @@ describe('sendAppDownloadCard.handler', () => {
 
   it('defaults to the Google Play card when platform is omitted', async () => {
     const sent: Array<Record<string, unknown>> = [];
-    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
-      sent.push(JSON.parse(String((init as RequestInit).body)));
-      return new Response(JSON.stringify({ messages: [{ id: 'wamid.2' }] }), { status: 200 });
-    });
+    stubMetaSend(sent);
 
     const supa = mockSupabase();
     const res = await sendAppDownloadCard.handler({ language: 'en' }, ctxFor(supa.client));
@@ -428,7 +441,8 @@ describe('sendAppDownloadCard.handler', () => {
 
 Add `sendAppDownloadCard` to the test file's import block, and ensure
 `vi` is imported: `import { describe, expect, it, vi } from 'vitest';`.
-Add `afterEach(() => vi.restoreAllMocks());` at module scope.
+Add `afterEach(() => vi.unstubAllGlobals());` at module scope so the stubbed
+`fetch` does not leak into other suites.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
