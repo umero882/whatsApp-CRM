@@ -564,11 +564,21 @@ export const escalateToHuman: ToolHandler = {
 export const APP_PLAY_STORE_URL =
   'https://play.google.com/store/apps/details?id=com.ethiopianmaids.app';
 
+export const APP_APP_STORE_URL =
+  'https://apps.apple.com/us/app/ethiopian-maids/id6762796104';
+
 /** Google's own hosted "Get it on Google Play" badge (official artwork). */
 const PLAY_BADGE_IMAGE_URL =
   'https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png';
 
+/**
+ * Apple's official badge, rasterized to PNG and served from our domain.
+ * Apple only publishes it as SVG, which Meta's image header rejects.
+ */
+const APP_STORE_BADGE_IMAGE_URL = 'https://ethiopianmaids.com/badges/app-store.png';
+
 export type AppCardLanguage = 'en' | 'ar' | 'am';
+export type AppCardPlatform = 'android' | 'ios';
 
 export interface AppDownloadCard {
   bodyText: string;
@@ -580,39 +590,76 @@ export interface AppDownloadCard {
 
 /**
  * Localized copy for the app-download card. Pure — exported for tests.
- * Button text must stay ≤20 chars (Meta cta_url display_text limit).
+ * Button text must stay ≤20 chars (Meta cta_url display_text limit);
+ * footer ≤60. Each footer names the OTHER store so a single card still
+ * tells both audiences the app exists.
  */
-export function buildAppDownloadCard(language: AppCardLanguage): AppDownloadCard {
-  const copy: Record<AppCardLanguage, { body: string; button: string; footer: string }> = {
+export function buildAppDownloadCard(
+  language: AppCardLanguage,
+  platform: AppCardPlatform = 'android',
+): AppDownloadCard {
+  const copy: Record<
+    AppCardLanguage,
+    Record<AppCardPlatform, { body: string; button: string; footer: string }>
+  > = {
     en: {
-      body:
-        'This is the official Ethiopian Maids app on Google Play. ' +
-        'Download it to register, browse candidates, and apply for jobs — all in one safe place.',
-      button: 'Open Google Play',
-      footer: 'iPhone app coming soon on the App Store',
+      android: {
+        body:
+          'This is the official Ethiopian Maids app on Google Play. ' +
+          'Download it to register, browse candidates, and apply for jobs — all in one safe place.',
+        button: 'Open Google Play',
+        footer: 'Also available on the App Store',
+      },
+      ios: {
+        body:
+          'This is the official Ethiopian Maids app on the App Store. ' +
+          'Download it to register, browse candidates, and apply for jobs — all in one safe place.',
+        button: 'Open App Store',
+        footer: 'Also available on Google Play',
+      },
     },
     ar: {
-      body:
-        'هذا هو تطبيق Ethiopian Maids الرسمي على متجر Google Play. ' +
-        'حمّله للتسجيل وتصفح المرشحات والتقديم على الوظائف — كل ذلك في مكان واحد آمن.',
-      button: 'افتح Google Play',
-      footer: 'تطبيق الآيفون قريباً على App Store',
+      android: {
+        body:
+          'هذا هو تطبيق Ethiopian Maids الرسمي على متجر Google Play. ' +
+          'حمّله للتسجيل وتصفح المرشحات والتقديم على الوظائف — كل ذلك في مكان واحد آمن.',
+        button: 'افتح Google Play',
+        footer: 'متوفر أيضاً على App Store',
+      },
+      ios: {
+        body:
+          'هذا هو تطبيق Ethiopian Maids الرسمي على App Store. ' +
+          'حمّله للتسجيل وتصفح المرشحات والتقديم على الوظائف — كل ذلك في مكان واحد آمن.',
+        button: 'افتح App Store',
+        footer: 'متوفر أيضاً على Google Play',
+      },
     },
     am: {
-      body:
-        'ይህ በGoogle Play ላይ ያለው ኦፊሴላዊ የEthiopian Maids መተግበሪያ ነው። ' +
-        'ለመመዝገብ፣ እጩዎችን ለማየት እና ለስራ ለማመልከት ያውርዱት።',
-      button: 'Google Play ክፈት',
-      footer: 'የiPhone መተግበሪያ በቅርቡ በApp Store ላይ',
+      android: {
+        body:
+          'ይህ በGoogle Play ላይ ያለው ኦፊሴላዊ የEthiopian Maids መተግበሪያ ነው። ' +
+          'ለመመዝገብ፣ እጩዎችን ለማየት እና ለስራ ለማመልከት ያውርዱት።',
+        button: 'Google Play ክፈት',
+        footer: 'በApp Store ላይም ይገኛል',
+      },
+      ios: {
+        body:
+          'ይህ በApp Store ላይ ያለው ኦፊሴላዊ የEthiopian Maids መተግበሪያ ነው። ' +
+          'ለመመዝገብ፣ እጩዎችን ለማየት እና ለስራ ለማመልከት ያውርዱት።',
+        button: 'App Store ክፈት',
+        footer: 'በGoogle Play ላይም ይገኛል',
+      },
     },
   };
-  const c = copy[language] ?? copy.en;
+  const byPlatform = copy[language] ?? copy.en;
+  const c = byPlatform[platform] ?? byPlatform.android;
+  const isIos = platform === 'ios';
   return {
     bodyText: c.body,
     buttonText: c.button,
     footerText: c.footer,
-    headerImageUrl: PLAY_BADGE_IMAGE_URL,
-    url: APP_PLAY_STORE_URL,
+    headerImageUrl: isIos ? APP_STORE_BADGE_IMAGE_URL : PLAY_BADGE_IMAGE_URL,
+    url: isIos ? APP_APP_STORE_URL : APP_PLAY_STORE_URL,
   };
 }
 
