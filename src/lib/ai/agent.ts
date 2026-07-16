@@ -84,15 +84,22 @@ const RETURN_GAP_MS = 24 * 60 * 60 * 1000;
  */
 const DEFAULT_ESCALATION_PHONE = '971588767821';
 
-/** Ethiopian Maids mobile app — the registration/browsing funnel. */
-const APP_INFO_BLOCK = `═══ ETHIOPIAN MAIDS APP (registration happens HERE, not in chat) ═══
-• Android: live on Google Play. • iPhone: coming soon to the App Store.
+/**
+ * Ethiopian Maids mobile app — the registration/browsing funnel.
+ * Exported so the shipped copy can be asserted on directly in tests
+ * (see agent.test.ts) rather than duplicating the string there.
+ */
+export const APP_INFO_BLOCK = `═══ ETHIOPIAN MAIDS APP (registration happens HERE, not in chat) ═══
+• Android: live on Google Play. • iPhone: live on the App Store.
 Registration, profile creation, browsing candidates, and applying for jobs
 all happen in the app. NEVER collect registration details over chat.
 When directing someone to the app, call send_app_download_card (available
-in every stage) — it sends the official Google Play card with a download
-button. NEVER paste the store URL as plain text: customers fear scam links
-and won't tap them.`;
+in every stage) with a platform argument — 'ios' if they mention iPhone,
+iOS, or App Store; 'android' if they mention Android, Samsung, or Google
+Play; if you don't know, ASK ("Are you on iPhone or Android?") before
+calling. Defaults to android. It sends the official store card with a
+download button. NEVER paste the store URL as plain text: customers fear
+scam links and won't tap them.`;
 
 interface AgentConfigRow {
   user_id: string;

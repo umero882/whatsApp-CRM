@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractChoicesFromText, stripCardNarration, stringifyHistoryMessage } from './agent';
+import { APP_INFO_BLOCK, extractChoicesFromText, stripCardNarration, stringifyHistoryMessage } from './agent';
 
 describe('stripCardNarration', () => {
   it('leaves normal replies untouched', () => {
@@ -143,5 +143,35 @@ describe('extractChoicesFromText — prose option lists', () => {
     )).toBeNull();
     // Enumeration mid-text, not the trailing sentence.
     expect(extractChoicesFromText('Options include Childcare or Cooking. When do you need her to start?')).toBeNull();
+  });
+});
+
+describe('APP_INFO_BLOCK — iOS launch copy (regression: iOS app went live 2026-07-16)', () => {
+  it('no longer claims the iPhone app is "coming soon"', () => {
+    expect(APP_INFO_BLOCK).not.toMatch(/coming soon/i);
+  });
+
+  it('states both stores are live', () => {
+    expect(APP_INFO_BLOCK).toMatch(/Google Play/);
+    expect(APP_INFO_BLOCK).toMatch(/App Store/);
+    expect(APP_INFO_BLOCK).toMatch(/Android[^.]*live/i);
+    expect(APP_INFO_BLOCK).toMatch(/iPhone[^.]*live/i);
+  });
+
+  it('tells the model how to pick the platform argument', () => {
+    expect(APP_INFO_BLOCK).toMatch(/platform/i);
+    expect(APP_INFO_BLOCK).toMatch(/'ios'/);
+    expect(APP_INFO_BLOCK).toMatch(/'android'/);
+    expect(APP_INFO_BLOCK).toMatch(/Are you on iPhone or Android/i);
+  });
+
+  it('still forbids collecting registration details in chat and pasting the raw store URL', () => {
+    expect(APP_INFO_BLOCK).toMatch(/NEVER collect registration details over chat/i);
+    expect(APP_INFO_BLOCK).toMatch(/NEVER paste the store URL as plain text/i);
+    expect(APP_INFO_BLOCK).not.toMatch(/https?:\/\//);
+  });
+
+  it('still tells the model send_app_download_card is available in every stage', () => {
+    expect(APP_INFO_BLOCK).toMatch(/send_app_download_card \(available\s+in every stage\)/);
   });
 });
