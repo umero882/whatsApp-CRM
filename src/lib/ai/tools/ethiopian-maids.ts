@@ -666,8 +666,8 @@ export function buildAppDownloadCard(
 export const sendAppDownloadCard: ToolHandler = {
   name: 'send_app_download_card',
   description:
-    'Send the OFFICIAL Ethiopian Maids app download card: Google Play badge image + a tappable "Open Google Play" button. ' +
-    'ALWAYS use this when directing a customer to download the app or register — NEVER paste the Play Store URL as text (customers fear scam links). ' +
+    'Send the OFFICIAL Ethiopian Maids app download card: the store badge image + a tappable button. ' +
+    'ALWAYS use this when directing a customer to download the app or register — NEVER paste a store URL as text (customers fear scam links). ' +
     'After the card is sent, your text reply is ONE short sentence (e.g. "Tap the button above to get our official app 🌸") — do not repeat any link.',
   parameters: {
     type: 'object',
@@ -676,6 +676,15 @@ export const sendAppDownloadCard: ToolHandler = {
         type: 'string',
         enum: ['en', 'ar', 'am'],
         description: 'Card language matching the conversation: en (English), ar (Arabic), am (Amharic). Default en.',
+      },
+      platform: {
+        type: 'string',
+        enum: ['android', 'ios'],
+        description:
+          "The customer's phone type. Pass 'ios' if they mention iPhone, iOS, or the App Store; "
+          + "'android' if they mention Android, Samsung, or Google Play. "
+          + 'If you do not know, ASK one short question ("Are you on iPhone or Android?") before calling this tool. '
+          + 'Defaults to android.',
       },
     },
     required: [],
@@ -686,7 +695,9 @@ export const sendAppDownloadCard: ToolHandler = {
       return { error: 'WhatsApp send credentials are not available in this run. Cannot send the card.' };
     }
     const language = (['en', 'ar', 'am'].includes(String(args.language)) ? String(args.language) : 'en') as AppCardLanguage;
-    const card = buildAppDownloadCard(language);
+    const platform = (['android', 'ios'].includes(String(args.platform)) ? String(args.platform) : 'android') as AppCardPlatform;
+    const card = buildAppDownloadCard(language, platform);
+    const storeName = platform === 'ios' ? 'App Store' : 'Google Play';
     const to = sanitizePhoneForMeta(ctx.contactPhone);
 
     let messageId = '';
@@ -755,10 +766,11 @@ export const sendAppDownloadCard: ToolHandler = {
       ok: true,
       delivered_as: deliveredAs,
       language,
+      platform,
       note:
         deliveredAs === 'text_fallback'
-          ? 'Card rendering unavailable — a plain message with the official link was sent instead. Reply with ONE short reassuring sentence that this is our official Google Play page.'
-          : 'Official app card with Google Play button is now in the customer\'s chat. Reply with ONE short sentence pointing at it (e.g. "Tap the button above to get our official app 🌸"). Do NOT paste any link.',
+          ? `Card rendering unavailable — a plain message with the official link was sent instead. Reply with ONE short reassuring sentence that this is our official ${storeName} page.`
+          : `Official app card with the ${storeName} button is now in the customer's chat. Reply with ONE short sentence pointing at it (e.g. "Tap the button above to get our official app 🌸"). Do NOT paste any link.`,
     };
   },
 };
