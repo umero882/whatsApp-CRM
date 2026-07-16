@@ -113,8 +113,14 @@ describe('buildAppDownloadCard', () => {
     '%s/%s footer no longer claims iOS is coming soon',
     (lang, platform) => {
       const card = buildAppDownloadCard(lang, platform);
-      for (const banned of ['coming soon', 'قريبا', 'قريباً', 'በቅርቡ']) {
-        expect(card.footerText).not.toContain(banned);
+      // Arabic "soon" appears with the tanween mark (U+064B) either after the
+      // alif (قريباً) or, per standard orthography, before it (قريبًا) — both
+      // are just 'قريبا' plus that mark in a different spot. Strip U+064B so
+      // every orthography collapses to the same base string; otherwise a
+      // banned-word list keyed on one spelling silently misses the other.
+      const footerNoTanween = card.footerText.replace(/\u064B/g, '');
+      for (const banned of ['coming soon', 'قريبا', 'በቅርቡ']) {
+        expect(footerNoTanween).not.toContain(banned);
       }
     },
   );

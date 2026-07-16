@@ -556,8 +556,9 @@ export const escalateToHuman: ToolHandler = {
 // ----------------------------------------------------------------
 // send_app_download_card — official-looking interactive card that
 // directs the customer to the Ethiopian Maids app. Customers distrust
-// raw pasted URLs (scam fear), so this renders the official Google
-// Play badge as header image + a tappable "Open Google Play" button
+// raw pasted URLs (scam fear), so this renders the official store
+// badge (Google Play or the App Store, chosen by platform) as header
+// image + a tappable "Open Google Play" / "Open App Store" button
 // instead of a bare link.
 // ----------------------------------------------------------------
 
