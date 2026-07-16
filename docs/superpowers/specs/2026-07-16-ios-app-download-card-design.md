@@ -133,7 +133,25 @@ platform: {
 already having — the only channel that can see a user who has not installed
 the app yet.
 
-### 5. Badge asset
+### 5. Platform-aware handler notes
+
+`sendAppDownloadCard.handler` returns a `note` telling Lucy what to say after
+the card lands. Both branches currently hardcode "Google Play"
+(`ethiopian-maids.ts:711-714`):
+
+> "Official app card with Google Play button is now in the customer's chat…"
+
+Left alone, an iPhone customer would receive an App Store card and then hear
+Lucy say "Google Play". The notes must interpolate the store name:
+
+```ts
+const storeName = platform === 'ios' ? 'App Store' : 'Google Play';
+```
+
+The handler's return also gains `platform` alongside `language`, so the
+conversation log records which card was sent.
+
+### 6. Badge asset
 
 Rasterize Apple's official badge SVG to PNG and commit it to the monorepo at
 `apps/web/public/badges/app-store.png`, served at
