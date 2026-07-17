@@ -36,6 +36,31 @@ describe('stripCardNarration', () => {
     expect(r.mentioned).toBe(true);
     expect(r.cleaned).toBe('');
   });
+
+  // Production incident 2026-07-17: the model replied with the pointer
+  // sentence in PLAIN LANGUAGE (no tool name) and never called the tool, so
+  // the guard missed it and no card was sent — the customer saw only the
+  // sentence. These natural-language pointers must now count as narration.
+  it.each([
+    'Tap the button above to get our official app 🌸',
+    'Tap the button below to download the app.',
+    'You can download our app to register — tap the button above 🌸',
+  ])('detects plain-language card pointers with no tool name: %s', (text) => {
+    const r = stripCardNarration(text);
+    expect(r.mentioned).toBe(true);
+    // Nothing to strip — the sentence itself is a fine reply to show.
+    expect(r.cleaned).toBe(text);
+  });
+
+  it('does not fire on unrelated mentions of an app', () => {
+    for (const text of [
+      'Great — your application has been received!',
+      'The interview happens over a video app link we will send.',
+      'Welcome to Ethiopian Maids 🌸 How can I help you today?',
+    ]) {
+      expect(stripCardNarration(text).mentioned).toBe(false);
+    }
+  });
 });
 
 describe('stringifyHistoryMessage — media', () => {

@@ -578,27 +578,8 @@ const PLAY_BADGE_IMAGE_URL =
  */
 const APP_STORE_BADGE_IMAGE_URL = 'https://ethiopianmaids.com/badges/app-store.png';
 
-/**
- * Device-routing link used when we do not know the customer's phone.
- *
- * We cannot know it before they install the app (device_tokens only exists
- * afterwards), and the model guesses "android" rather than asking — verified
- * in production logs. So the phone identifies itself at tap time: /get reads
- * the User-Agent and redirects to the right store. A guessing model becomes
- * harmless.
- */
-export const APP_SMART_LINK_URL = 'https://ethiopianmaids.com/get';
-
-/** Both official badges side by side, for the unknown-platform card. */
-const BOTH_STORES_BADGE_IMAGE_URL = 'https://ethiopianmaids.com/badges/both-stores.png';
-
 export type AppCardLanguage = 'en' | 'ar' | 'am';
-/**
- * 'unknown' is the DEFAULT on purpose: it yields a card whose button
- * auto-routes by device, so omitting or failing to determine the platform
- * still lands the customer in the right store.
- */
-export type AppCardPlatform = 'android' | 'ios' | 'unknown';
+export type AppCardPlatform = 'android' | 'ios';
 
 export interface AppDownloadCard {
   bodyText: string;
@@ -616,7 +597,7 @@ export interface AppDownloadCard {
  */
 export function buildAppDownloadCard(
   language: AppCardLanguage,
-  platform: AppCardPlatform = 'unknown',
+  platform: AppCardPlatform = 'android',
 ): AppDownloadCard {
   const copy: Record<
     AppCardLanguage,
@@ -637,13 +618,6 @@ export function buildAppDownloadCard(
         button: 'Open App Store',
         footer: 'Also available on Google Play',
       },
-      unknown: {
-        body:
-          'This is the official Ethiopian Maids app. ' +
-          'Download it to register, browse candidates, and apply for jobs — all in one safe place.',
-        button: 'Download the App',
-        footer: 'Works on iPhone and Android',
-      },
     },
     ar: {
       android: {
@@ -659,13 +633,6 @@ export function buildAppDownloadCard(
           'حمّله للتسجيل وتصفح المرشحات والتقديم على الوظائف — كل ذلك في مكان واحد آمن.',
         button: 'افتح App Store',
         footer: 'متوفر أيضاً على Google Play',
-      },
-      unknown: {
-        body:
-          'هذا هو تطبيق Ethiopian Maids الرسمي. ' +
-          'حمّله للتسجيل وتصفح المرشحات والتقديم على الوظائف — كل ذلك في مكان واحد آمن.',
-        button: 'حمّل التطبيق',
-        footer: 'يعمل على iPhone و Android',
       },
     },
     am: {
@@ -683,42 +650,72 @@ export function buildAppDownloadCard(
         button: 'App Store ክፈት',
         footer: 'በGoogle Play ላይም ይገኛል',
       },
-      unknown: {
-        body:
-          'ይህ ኦፊሴላዊው የEthiopian Maids መተግበሪያ ነው። ' +
-          'ለመመዝገብ፣ እጩዎችን ለማየት እና ለስራ ለማመልከት ያውርዱት።',
-        button: 'መተግበሪያውን አውርድ',
-        footer: 'በiPhone እና Android ላይ ይሰራል',
-      },
     },
   };
   const byPlatform = copy[language] ?? copy.en;
-  const c = byPlatform[platform] ?? byPlatform.unknown;
-  const BADGE: Record<AppCardPlatform, string> = {
-    ios: APP_STORE_BADGE_IMAGE_URL,
-    android: PLAY_BADGE_IMAGE_URL,
-    unknown: BOTH_STORES_BADGE_IMAGE_URL,
-  };
-  const URL_FOR: Record<AppCardPlatform, string> = {
-    ios: APP_APP_STORE_URL,
-    android: APP_PLAY_STORE_URL,
-    unknown: APP_SMART_LINK_URL,
-  };
+  const c = byPlatform[platform] ?? byPlatform.android;
+  const isIos = platform === 'ios';
   return {
     bodyText: c.body,
     buttonText: c.button,
     footerText: c.footer,
-    headerImageUrl: BADGE[platform] ?? BOTH_STORES_BADGE_IMAGE_URL,
-    url: URL_FOR[platform] ?? APP_SMART_LINK_URL,
+    headerImageUrl: isIos ? APP_STORE_BADGE_IMAGE_URL : PLAY_BADGE_IMAGE_URL,
+    url: isIos ? APP_APP_STORE_URL : APP_PLAY_STORE_URL,
   };
+}
+
+type CardDelivery = 'card' | 'card_no_image' | 'text_fallback';
+
+/**
+ * Send ONE store's card with graceful degradation: cta_url with the badge
+ * image, then without it (Meta occasionally can't fetch the image), then a
+ * plain-text link as a last resort. Throws only if all three fail, so the
+ * caller can decide whether the other card still made it through.
+ */
+async function sendAppCard(
+  whatsapp: NonNullable<ToolContext['whatsapp']>,
+  to: string,
+  card: AppDownloadCard,
+): Promise<{ messageId: string; deliveredAs: CardDelivery }> {
+  const base = {
+    phoneNumberId: whatsapp.phoneNumberId,
+    accessToken: whatsapp.accessToken,
+    to,
+    bodyText: card.bodyText,
+    buttonText: card.buttonText,
+    url: card.url,
+    footerText: card.footerText,
+  };
+  try {
+    const r = await sendCtaUrlMessage({ ...base, headerImageUrl: card.headerImageUrl });
+    return { messageId: r.messageId, deliveredAs: 'card' };
+  } catch (e) {
+    console.warn('[send_app_download_card] cta_url with image failed, retrying without:',
+      e instanceof Error ? e.message : e);
+    try {
+      const r = await sendCtaUrlMessage(base);
+      return { messageId: r.messageId, deliveredAs: 'card_no_image' };
+    } catch (e2) {
+      console.warn('[send_app_download_card] cta_url failed, falling back to text:',
+        e2 instanceof Error ? e2.message : e2);
+      const r = await sendTextMessage({
+        phoneNumberId: whatsapp.phoneNumberId,
+        accessToken: whatsapp.accessToken,
+        to,
+        text: `${card.bodyText}\n\n${card.url}\n\n${card.footerText}`,
+      });
+      return { messageId: r.messageId, deliveredAs: 'text_fallback' };
+    }
+  }
 }
 
 export const sendAppDownloadCard: ToolHandler = {
   name: 'send_app_download_card',
   description:
-    'Send the OFFICIAL Ethiopian Maids app download card: the store badge image + a tappable button. ' +
+    'Send the OFFICIAL Ethiopian Maids app download card(s): store badge image + a tappable button. ' +
     'ALWAYS use this when directing a customer to download the app or register — NEVER paste a store URL as text (customers fear scam links). ' +
-    'After the card is sent, your text reply is ONE short sentence (e.g. "Tap the button above to get our official app 🌸") — do not repeat any link.',
+    'If you do not know the phone type, omit platform and BOTH store cards are sent so the customer picks. ' +
+    'After sending, your text reply is ONE short sentence pointing at the card(s) — do not repeat any link.',
   parameters: {
     type: 'object',
     properties: {
@@ -731,12 +728,12 @@ export const sendAppDownloadCard: ToolHandler = {
         type: 'string',
         enum: ['android', 'ios'],
         description:
-          "The customer's phone type — ONLY pass this if they have actually told you. "
+          "The customer's phone type — ONLY pass this if they have already told you. "
           + "Pass 'ios' if they mentioned iPhone, iOS, or the App Store; 'android' if they mentioned "
           + 'Android, Samsung, or Google Play. '
           + 'If they have NOT told you, OMIT this parameter — do NOT guess and do NOT ask. '
-          + 'Omitting it sends a card whose button detects their phone automatically and opens the '
-          + 'right store, which is always correct. Guessing sends the wrong store.',
+          + 'Omitting it sends BOTH store cards (Google Play and App Store) so the customer taps '
+          + 'whichever matches their phone. That is always safe.',
       },
     },
     required: [],
@@ -747,67 +744,38 @@ export const sendAppDownloadCard: ToolHandler = {
       return { error: 'WhatsApp send credentials are not available in this run. Cannot send the card.' };
     }
     const language = (['en', 'ar', 'am'].includes(String(args.language)) ? String(args.language) : 'en') as AppCardLanguage;
-    // Anything not explicitly android/ios falls to 'unknown', whose card
-    // auto-routes by device. Never guess a store on the customer's behalf.
-    const platform = (['android', 'ios'].includes(String(args.platform))
+    // Only send a single store's card when the customer has actually named
+    // their phone. Otherwise send BOTH cards and let them tap the one that
+    // matches — never guess a store on their behalf.
+    const explicit = (['android', 'ios'].includes(String(args.platform))
       ? String(args.platform)
-      : 'unknown') as AppCardPlatform;
-    const card = buildAppDownloadCard(language, platform);
-    const storeName =
-      platform === 'ios' ? 'App Store' : platform === 'android' ? 'Google Play' : 'app download';
+      : null) as AppCardPlatform | null;
+    const platforms: AppCardPlatform[] = explicit ? [explicit] : ['android', 'ios'];
     const to = sanitizePhoneForMeta(ctx.contactPhone);
 
-    let messageId = '';
-    let deliveredAs: 'card' | 'card_no_image' | 'text_fallback' = 'card';
-    const base = {
-      phoneNumberId: ctx.whatsapp.phoneNumberId,
-      accessToken: ctx.whatsapp.accessToken,
-      to,
-      bodyText: card.bodyText,
-      buttonText: card.buttonText,
-      url: card.url,
-      footerText: card.footerText,
-    };
-    try {
-      const r = await sendCtaUrlMessage({ ...base, headerImageUrl: card.headerImageUrl });
-      messageId = r.messageId;
-    } catch (e) {
-      // Most likely cause: Meta couldn't fetch the header image. Retry
-      // the same card without the image before degrading further.
-      console.warn('[send_app_download_card] cta_url with image failed, retrying without:',
-        e instanceof Error ? e.message : e);
+    const sent: Array<{ platform: AppCardPlatform; messageId: string; deliveredAs: CardDelivery }> = [];
+    for (const p of platforms) {
       try {
-        const r = await sendCtaUrlMessage(base);
-        messageId = r.messageId;
-        deliveredAs = 'card_no_image';
-      } catch (e2) {
-        // Interactive messages can be rejected (rare account/region gaps).
-        // Degrade to a plain text with the link rather than sending nothing.
-        console.warn('[send_app_download_card] cta_url failed, falling back to text:',
-          e2 instanceof Error ? e2.message : e2);
-        try {
-          const r = await sendTextMessage({
-            phoneNumberId: ctx.whatsapp.phoneNumberId,
-            accessToken: ctx.whatsapp.accessToken,
-            to,
-            text: `${card.bodyText}\n\n${card.url}\n\n${card.footerText}`,
-          });
-          messageId = r.messageId;
-          deliveredAs = 'text_fallback';
-        } catch (e3) {
-          return { error: `Could not deliver the app card: ${e3 instanceof Error ? e3.message : String(e3)}` };
-        }
+        const r = await sendAppCard(ctx.whatsapp, to, buildAppDownloadCard(language, p));
+        sent.push({ platform: p, ...r });
+      } catch (e) {
+        console.warn(`[send_app_download_card] ${p} card could not be delivered:`,
+          e instanceof Error ? e.message : e);
       }
     }
 
-    const persistedText = `[Official app download card] ${card.bodyText}`;
+    if (sent.length === 0) {
+      return { error: 'Could not deliver the app download card(s) — every send attempt failed.' };
+    }
+
+    // One summary row + conversation bump; message_id is the last card sent.
     await ctx.supabase.from('messages').insert({
       conversation_id: ctx.conversationId,
       sender_type: 'agent',
       agent_kind: 'ai',
       content_type: 'text',
-      content_text: persistedText,
-      message_id: messageId,
+      content_text: '[Official app download card]',
+      message_id: sent[sent.length - 1].messageId,
       status: 'sent',
     });
     await ctx.supabase
@@ -819,17 +787,15 @@ export const sendAppDownloadCard: ToolHandler = {
       })
       .eq('id', ctx.conversationId);
 
+    const both = sent.length > 1;
+    const storeName = sent[0].platform === 'ios' ? 'App Store' : 'Google Play';
     return {
       ok: true,
-      delivered_as: deliveredAs,
+      sent_cards: sent.map((s) => s.platform),
       language,
-      platform,
-      note:
-        deliveredAs === 'text_fallback'
-          ? `Card rendering unavailable — a plain message with the official link was sent instead. Reply with ONE short reassuring sentence that this is our official ${storeName} page.`
-          : platform === 'unknown'
-            ? "Official app card is now in the customer's chat; its button opens the right store for whatever phone they have. Reply with ONE short sentence pointing at it (e.g. \"Tap the button above to get our official app 🌸\"). Do NOT name a store — you do not know their phone. Do NOT paste any link."
-            : `Official app card with the ${storeName} button is now in the customer's chat. Reply with ONE short sentence pointing at it (e.g. "Tap the button above to get our official app 🌸"). Do NOT paste any link.`,
+      note: both
+        ? "Both official app cards (Google Play and App Store) are now in the customer's chat. Reply with ONE short sentence telling them to tap Google Play if they use Android, or App Store if they use iPhone. Do NOT paste any link."
+        : `The official ${storeName} card is now in the customer's chat. Reply with ONE short sentence pointing at it (e.g. "Tap the button above to get our official app 🌸"). Do NOT paste any link.`,
     };
   },
 };

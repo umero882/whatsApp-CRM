@@ -96,10 +96,12 @@ all happen in the app. NEVER collect registration details over chat.
 When directing someone to the app, call send_app_download_card (available
 in every stage). Pass platform ONLY if the customer already told you which
 phone they have — 'ios' for iPhone/iOS/App Store, 'android' for
-Android/Samsung/Google Play. If they haven't said, OMIT platform: the card
-then detects their phone and opens the right store by itself. Do NOT guess
-and do NOT ask which phone — omitting is always correct. NEVER paste the
-store URL as plain text: customers fear scam links and won't tap them.`;
+Android/Samsung/Google Play. If they haven't said, OMIT platform: BOTH store
+cards are sent and the customer taps the one for their phone. Do NOT guess
+and do NOT ask which phone — omitting is always correct. You MUST actually
+CALL the tool — never just say "tap the button above" without calling it, or
+no card appears. NEVER paste the store URL as plain text: customers fear
+scam links and won't tap them.`;
 
 interface AgentConfigRow {
   user_id: string;
@@ -652,10 +654,27 @@ export const CARD_LANG: Record<Lang, AppCardLanguage> = {
  * (e.g. "Tap the button below 🌸 (send_app_download_card)") and strip
  * every reference. Pure — exported for tests.
  */
+/**
+ * A reply that POINTS AT a download card the model never actually sent —
+ * either by writing the tool name ("(send_app_download_card)") or, more
+ * commonly, in plain language ("tap the button above to get our app"). Both
+ * mean "a card should be on screen"; if none was sent this turn, the caller
+ * sends it for real. Missing the plain-language form left customers with the
+ * pointer sentence and no card at all (production incident 2026-07-17).
+ *
+ * The phrases are scoped to app-download pointing ("tap the button above",
+ * "download our/the app", "get our official app") so an unrelated mention of
+ * an app does not trigger a spurious card.
+ */
+const CARD_POINTER_RE =
+  /send_app_download_card|tap the (?:button|link) (?:above|below)|(?:get|download|install)[^.!?\n]*\bour\b[^.!?\n]*\bapp\b|download (?:the|our) (?:official )?app/i;
+
 export function stripCardNarration(text: string): { cleaned: string; mentioned: boolean } {
-  if (!/send_app_download_card/i.test(text)) {
+  if (!CARD_POINTER_RE.test(text)) {
     return { cleaned: text, mentioned: false };
   }
+  // Only the literal tool name needs stripping from the visible reply; the
+  // natural-language pointer sentence is a fine thing to show the customer.
   const cleaned = text
     .replace(/[([{]?\s*(?:call(?:ing)?\s+)?send_app_download_card\s*(?:\(\s*\))?\s*[)\]}]?/gi, '')
     .replace(/[ \t]{2,}/g, ' ')
