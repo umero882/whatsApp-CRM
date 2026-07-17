@@ -556,19 +556,30 @@ export const escalateToHuman: ToolHandler = {
 // ----------------------------------------------------------------
 // send_app_download_card — official-looking interactive card that
 // directs the customer to the Ethiopian Maids app. Customers distrust
-// raw pasted URLs (scam fear), so this renders the official Google
-// Play badge as header image + a tappable "Open Google Play" button
+// raw pasted URLs (scam fear), so this renders the official store
+// badge (Google Play or the App Store, chosen by platform) as header
+// image + a tappable "Open Google Play" / "Open App Store" button
 // instead of a bare link.
 // ----------------------------------------------------------------
 
 export const APP_PLAY_STORE_URL =
   'https://play.google.com/store/apps/details?id=com.ethiopianmaids.app';
 
+export const APP_APP_STORE_URL =
+  'https://apps.apple.com/us/app/ethiopian-maids/id6762796104';
+
 /** Google's own hosted "Get it on Google Play" badge (official artwork). */
 const PLAY_BADGE_IMAGE_URL =
   'https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png';
 
+/**
+ * Apple's official badge, rasterized to PNG and served from our domain.
+ * Apple only publishes it as SVG, which Meta's image header rejects.
+ */
+const APP_STORE_BADGE_IMAGE_URL = 'https://ethiopianmaids.com/badges/app-store.png';
+
 export type AppCardLanguage = 'en' | 'ar' | 'am';
+export type AppCardPlatform = 'android' | 'ios';
 
 export interface AppDownloadCard {
   bodyText: string;
@@ -580,47 +591,84 @@ export interface AppDownloadCard {
 
 /**
  * Localized copy for the app-download card. Pure — exported for tests.
- * Button text must stay ≤20 chars (Meta cta_url display_text limit).
+ * Button text must stay ≤20 chars (Meta cta_url display_text limit);
+ * footer ≤60. Each footer names the OTHER store so a single card still
+ * tells both audiences the app exists.
  */
-export function buildAppDownloadCard(language: AppCardLanguage): AppDownloadCard {
-  const copy: Record<AppCardLanguage, { body: string; button: string; footer: string }> = {
+export function buildAppDownloadCard(
+  language: AppCardLanguage,
+  platform: AppCardPlatform = 'android',
+): AppDownloadCard {
+  const copy: Record<
+    AppCardLanguage,
+    Record<AppCardPlatform, { body: string; button: string; footer: string }>
+  > = {
     en: {
-      body:
-        'This is the official Ethiopian Maids app on Google Play. ' +
-        'Download it to register, browse candidates, and apply for jobs — all in one safe place.',
-      button: 'Open Google Play',
-      footer: 'iPhone app coming soon on the App Store',
+      android: {
+        body:
+          'This is the official Ethiopian Maids app on Google Play. ' +
+          'Download it to register, browse candidates, and apply for jobs — all in one safe place.',
+        button: 'Open Google Play',
+        footer: 'Also available on the App Store',
+      },
+      ios: {
+        body:
+          'This is the official Ethiopian Maids app on the App Store. ' +
+          'Download it to register, browse candidates, and apply for jobs — all in one safe place.',
+        button: 'Open App Store',
+        footer: 'Also available on Google Play',
+      },
     },
     ar: {
-      body:
-        'هذا هو تطبيق Ethiopian Maids الرسمي على متجر Google Play. ' +
-        'حمّله للتسجيل وتصفح المرشحات والتقديم على الوظائف — كل ذلك في مكان واحد آمن.',
-      button: 'افتح Google Play',
-      footer: 'تطبيق الآيفون قريباً على App Store',
+      android: {
+        body:
+          'هذا هو تطبيق Ethiopian Maids الرسمي على متجر Google Play. ' +
+          'حمّله للتسجيل وتصفح المرشحات والتقديم على الوظائف — كل ذلك في مكان واحد آمن.',
+        button: 'افتح Google Play',
+        footer: 'متوفر أيضاً على App Store',
+      },
+      ios: {
+        body:
+          'هذا هو تطبيق Ethiopian Maids الرسمي على App Store. ' +
+          'حمّله للتسجيل وتصفح المرشحات والتقديم على الوظائف — كل ذلك في مكان واحد آمن.',
+        button: 'افتح App Store',
+        footer: 'متوفر أيضاً على Google Play',
+      },
     },
     am: {
-      body:
-        'ይህ በGoogle Play ላይ ያለው ኦፊሴላዊ የEthiopian Maids መተግበሪያ ነው። ' +
-        'ለመመዝገብ፣ እጩዎችን ለማየት እና ለስራ ለማመልከት ያውርዱት።',
-      button: 'Google Play ክፈት',
-      footer: 'የiPhone መተግበሪያ በቅርቡ በApp Store ላይ',
+      android: {
+        body:
+          'ይህ በGoogle Play ላይ ያለው ኦፊሴላዊ የEthiopian Maids መተግበሪያ ነው። ' +
+          'ለመመዝገብ፣ እጩዎችን ለማየት እና ለስራ ለማመልከት ያውርዱት።',
+        button: 'Google Play ክፈት',
+        footer: 'በApp Store ላይም ይገኛል',
+      },
+      ios: {
+        body:
+          'ይህ በApp Store ላይ ያለው ኦፊሴላዊ የEthiopian Maids መተግበሪያ ነው። ' +
+          'ለመመዝገብ፣ እጩዎችን ለማየት እና ለስራ ለማመልከት ያውርዱት።',
+        button: 'App Store ክፈት',
+        footer: 'በGoogle Play ላይም ይገኛል',
+      },
     },
   };
-  const c = copy[language] ?? copy.en;
+  const byPlatform = copy[language] ?? copy.en;
+  const c = byPlatform[platform] ?? byPlatform.android;
+  const isIos = platform === 'ios';
   return {
     bodyText: c.body,
     buttonText: c.button,
     footerText: c.footer,
-    headerImageUrl: PLAY_BADGE_IMAGE_URL,
-    url: APP_PLAY_STORE_URL,
+    headerImageUrl: isIos ? APP_STORE_BADGE_IMAGE_URL : PLAY_BADGE_IMAGE_URL,
+    url: isIos ? APP_APP_STORE_URL : APP_PLAY_STORE_URL,
   };
 }
 
 export const sendAppDownloadCard: ToolHandler = {
   name: 'send_app_download_card',
   description:
-    'Send the OFFICIAL Ethiopian Maids app download card: Google Play badge image + a tappable "Open Google Play" button. ' +
-    'ALWAYS use this when directing a customer to download the app or register — NEVER paste the Play Store URL as text (customers fear scam links). ' +
+    'Send the OFFICIAL Ethiopian Maids app download card: the store badge image + a tappable button. ' +
+    'ALWAYS use this when directing a customer to download the app or register — NEVER paste a store URL as text (customers fear scam links). ' +
     'After the card is sent, your text reply is ONE short sentence (e.g. "Tap the button above to get our official app 🌸") — do not repeat any link.',
   parameters: {
     type: 'object',
@@ -629,6 +677,15 @@ export const sendAppDownloadCard: ToolHandler = {
         type: 'string',
         enum: ['en', 'ar', 'am'],
         description: 'Card language matching the conversation: en (English), ar (Arabic), am (Amharic). Default en.',
+      },
+      platform: {
+        type: 'string',
+        enum: ['android', 'ios'],
+        description:
+          "The customer's phone type. Pass 'ios' if they mention iPhone, iOS, or the App Store; "
+          + "'android' if they mention Android, Samsung, or Google Play. "
+          + 'If you do not know, ASK one short question ("Are you on iPhone or Android?") before calling this tool. '
+          + 'Defaults to android.',
       },
     },
     required: [],
@@ -639,7 +696,9 @@ export const sendAppDownloadCard: ToolHandler = {
       return { error: 'WhatsApp send credentials are not available in this run. Cannot send the card.' };
     }
     const language = (['en', 'ar', 'am'].includes(String(args.language)) ? String(args.language) : 'en') as AppCardLanguage;
-    const card = buildAppDownloadCard(language);
+    const platform = (['android', 'ios'].includes(String(args.platform)) ? String(args.platform) : 'android') as AppCardPlatform;
+    const card = buildAppDownloadCard(language, platform);
+    const storeName = platform === 'ios' ? 'App Store' : 'Google Play';
     const to = sanitizePhoneForMeta(ctx.contactPhone);
 
     let messageId = '';
@@ -708,10 +767,11 @@ export const sendAppDownloadCard: ToolHandler = {
       ok: true,
       delivered_as: deliveredAs,
       language,
+      platform,
       note:
         deliveredAs === 'text_fallback'
-          ? 'Card rendering unavailable — a plain message with the official link was sent instead. Reply with ONE short reassuring sentence that this is our official Google Play page.'
-          : 'Official app card with Google Play button is now in the customer\'s chat. Reply with ONE short sentence pointing at it (e.g. "Tap the button above to get our official app 🌸"). Do NOT paste any link.',
+          ? `Card rendering unavailable — a plain message with the official link was sent instead. Reply with ONE short reassuring sentence that this is our official ${storeName} page.`
+          : `Official app card with the ${storeName} button is now in the customer's chat. Reply with ONE short sentence pointing at it (e.g. "Tap the button above to get our official app 🌸"). Do NOT paste any link.`,
     };
   },
 };

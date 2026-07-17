@@ -53,9 +53,9 @@ Our team speaks English, Arabic, and Amharic.
 
 ## DOC: The Ethiopian Maids app — what it is and what you can do in it
 
-The official Ethiopian Maids app is available on Google Play (search for
-"Ethiopian Maids" or use the download button we send in chat). The iPhone
-version is coming soon to the App Store.
+The official Ethiopian Maids app is live on both Google Play and the Apple
+App Store (search for "Ethiopian Maids", or use the download button we
+send in chat, and we'll send the right one for your phone).
 
 For sponsors, the app lets you: create an account, browse available
 candidates with photos, experience and skills, shortlist candidates, and
@@ -66,9 +66,10 @@ upload your documents (passport photo page, certificates), set your
 preferred destination and salary, browse job openings posted by sponsors,
 and apply directly.
 
-Important safety note: we only ever share the app through the official
-Google Play card in chat — we never send bare download links. If you receive
-an Ethiopian Maids "link" from any other number, do not tap it.
+Important safety note: we only ever share the app through the official app
+card (Google Play or App Store, matching your phone) in chat — we never
+send bare download links. If you receive an Ethiopian Maids "link" from any
+other number, do not tap it.
 
 Creating an account and browsing are free for both sides.
 
@@ -102,8 +103,9 @@ or personal phone number before a confirmed booking.
 
 ## DOC: How it works for job seekers (maids) — step by step
 
-1. Download the official Ethiopian Maids app from Google Play (we send the
-   official download card in chat — tap the button).
+1. Download the official Ethiopian Maids app from Google Play or the App
+   Store, whichever matches your phone (we send the official download card
+   in chat — tap the button).
 2. Register and complete your profile: your experience, skills, languages,
    preferred destination country, and expected salary. Upload a clear photo
    of your passport information page in the app.
@@ -344,8 +346,9 @@ expected salary and start date shown on her card.
   confirmed booking, never in the browsing stage.
 - All registration and document uploads happen inside the official app,
   not over chat.
-- We only share the app via the official Google Play card. Do not trust
-  Ethiopian Maids "links" from unknown numbers.
+- We only share the app via the official app card (Google Play for Android,
+  App Store for iPhone) sent right here in chat. Do not trust Ethiopian
+  Maids "links" from unknown numbers.
 - Workers keep their own passports at all times — in every GCC country we
   serve, passport confiscation by employers is prohibited.
 - If you ever feel unsafe or mistreated — worker or sponsor — tell us here

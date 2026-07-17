@@ -1,13 +1,48 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  APP_APP_STORE_URL,
   APP_PLAY_STORE_URL,
   buildAppDownloadCard,
   buildChoiceMessage,
   buildEscalationForward,
   saveMatchAlert,
+  sendAppDownloadCard,
 } from './ethiopian-maids';
 import { formatKbPassages } from './knowledge-base';
 import type { ToolContext } from './registry';
+
+/**
+ * Minimal supabase mock: records update/insert payloads and their
+ * .eq filters; both chains are awaitable and resolve { error: null }.
+ * Shared across suites that need a stand-in `ctx.supabase`.
+ */
+function mockSupabase() {
+  const ops: Array<{ table: string; kind: 'update' | 'insert'; payload: unknown; eqs: Array<[string, unknown]> }> = [];
+  return {
+    ops,
+    client: {
+      from(table: string) {
+        return {
+          update(payload: unknown) {
+            const rec = { table, kind: 'update' as const, payload, eqs: [] as Array<[string, unknown]> };
+            ops.push(rec);
+            const chain = {
+              eq(k: string, v: unknown) { rec.eqs.push([k, v]); return chain; },
+              then(resolve: (r: { error: null }) => void) { resolve({ error: null }); },
+            };
+            return chain;
+          },
+          insert(payload: unknown) {
+            ops.push({ table, kind: 'insert', payload, eqs: [] });
+            return Promise.resolve({ error: null });
+          },
+        };
+      },
+    },
+  };
+}
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe('buildEscalationForward', () => {
   it('includes name, normalized number, reason, issue, and reply link', () => {
@@ -41,51 +76,62 @@ describe('buildEscalationForward', () => {
 });
 
 describe('buildAppDownloadCard', () => {
-  it.each(['en', 'ar', 'am'] as const)('%s card points at the official store with a valid button', (lang) => {
-    const card = buildAppDownloadCard(lang);
+  const LANGS = ['en', 'ar', 'am'] as const;
+
+  it.each(LANGS)('%s android card points at Google Play with the official badge', (lang) => {
+    const card = buildAppDownloadCard(lang, 'android');
     expect(card.url).toBe(APP_PLAY_STORE_URL);
-    expect(card.url).toContain('play.google.com/store/apps/details?id=com.ethiopianmaids.app');
     expect(card.headerImageUrl).toMatch(/^https:\/\/play\.google\.com\/.*badge.*\.png$/);
-    // Meta cta_url limits: display_text ≤20 chars, footer ≤60 chars.
-    expect(card.buttonText.length).toBeGreaterThan(0);
-    expect(card.buttonText.length).toBeLessThanOrEqual(20);
-    expect(card.footerText.length).toBeLessThanOrEqual(60);
-    expect(card.bodyText.length).toBeGreaterThan(20);
-    expect(card.bodyText.length).toBeLessThanOrEqual(1024);
+  });
+
+  it.each(LANGS)('%s ios card points at the App Store with a PNG badge', (lang) => {
+    const card = buildAppDownloadCard(lang, 'ios');
+    expect(card.url).toBe(APP_APP_STORE_URL);
+    expect(card.url).toContain('apps.apple.com/us/app/ethiopian-maids/id6762796104');
+    // Meta rejects SVG headers; the badge must be a self-hosted PNG.
+    expect(card.headerImageUrl).toMatch(/^https:\/\/ethiopianmaids\.com\/badges\/app-store\.png$/);
+  });
+
+  it('defaults to the Google Play card when platform is omitted', () => {
+    const card = buildAppDownloadCard('en');
+    expect(card.url).toBe(APP_PLAY_STORE_URL);
+  });
+
+  it.each(LANGS.flatMap((l) => (['android', 'ios'] as const).map((p) => [l, p] as const)))(
+    '%s/%s card respects Meta cta_url limits',
+    (lang, platform) => {
+      const card = buildAppDownloadCard(lang, platform);
+      expect(card.buttonText.length).toBeGreaterThan(0);
+      expect(card.buttonText.length).toBeLessThanOrEqual(20);
+      expect(card.footerText.length).toBeLessThanOrEqual(60);
+      expect(card.bodyText.length).toBeGreaterThan(20);
+      expect(card.bodyText.length).toBeLessThanOrEqual(1024);
+    },
+  );
+
+  it.each(LANGS.flatMap((l) => (['android', 'ios'] as const).map((p) => [l, p] as const)))(
+    '%s/%s footer no longer claims iOS is coming soon',
+    (lang, platform) => {
+      const card = buildAppDownloadCard(lang, platform);
+      // Arabic "soon" appears with the tanween mark (U+064B) either after the
+      // alif (قريباً) or, per standard orthography, before it (قريبًا) — both
+      // are just 'قريبا' plus that mark in a different spot. Strip U+064B so
+      // every orthography collapses to the same base string; otherwise a
+      // banned-word list keyed on one spelling silently misses the other.
+      const footerNoTanween = card.footerText.replace(/\u064B/g, '');
+      for (const banned of ['coming soon', 'قريبا', 'በቅርቡ']) {
+        expect(footerNoTanween).not.toContain(banned);
+      }
+    },
+  );
+
+  it('each card footer points at the other store', () => {
+    expect(buildAppDownloadCard('en', 'android').footerText).toContain('App Store');
+    expect(buildAppDownloadCard('en', 'ios').footerText).toContain('Google Play');
   });
 });
 
 describe('saveMatchAlert.handler', () => {
-  /**
-   * Minimal supabase mock: records update/insert payloads and their
-   * .eq filters; both chains are awaitable and resolve { error: null }.
-   */
-  function mockSupabase() {
-    const ops: Array<{ table: string; kind: 'update' | 'insert'; payload: unknown; eqs: Array<[string, unknown]> }> = [];
-    return {
-      ops,
-      client: {
-        from(table: string) {
-          return {
-            update(payload: unknown) {
-              const rec = { table, kind: 'update' as const, payload, eqs: [] as Array<[string, unknown]> };
-              ops.push(rec);
-              const chain = {
-                eq(k: string, v: unknown) { rec.eqs.push([k, v]); return chain; },
-                then(resolve: (r: { error: null }) => void) { resolve({ error: null }); },
-              };
-              return chain;
-            },
-            insert(payload: unknown) {
-              ops.push({ table, kind: 'insert', payload, eqs: [] });
-              return Promise.resolve({ error: null });
-            },
-          };
-        },
-      },
-    };
-  }
-
   function makeCtx(client: unknown): ToolContext {
     return {
       supabase: client,
@@ -208,5 +254,60 @@ describe('formatKbPassages', () => {
     const r = formatKbPassages([]);
     expect(r.found).toBe(0);
     expect(r.note).toContain('do NOT guess');
+  });
+});
+
+describe('sendAppDownloadCard.handler', () => {
+  function ctxFor(supabase: unknown) {
+    return {
+      supabase,
+      conversationId: 'conv-1',
+      contactPhone: '+971585868560',
+      whatsapp: { phoneNumberId: 'pn-1', accessToken: 'tok-1' },
+    } as unknown as ToolContext;
+  }
+
+  /**
+   * Mock Meta's send endpoint the way the rest of this repo does
+   * (`vi.stubGlobal` + a plain object). `sendCtaUrlMessage` only reads
+   * `.ok`, `.status` and `.json()` — see meta-api.ts:222-226.
+   */
+  function stubMetaSend(sent: Array<Record<string, unknown>>) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { body?: string }) => {
+        sent.push(JSON.parse(String(init.body)));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ messages: [{ id: 'wamid.test' }] }),
+        };
+      }),
+    );
+  }
+
+  it('sends the App Store card and tells the agent to say App Store', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    stubMetaSend(sent);
+
+    const supa = mockSupabase();
+    const res = await sendAppDownloadCard.handler({ language: 'en', platform: 'ios' }, ctxFor(supa.client));
+
+    expect((res as { ok: boolean }).ok).toBe(true);
+    expect((res as { platform: string }).platform).toBe('ios');
+    expect((res as { note: string }).note).toContain('App Store');
+    expect((res as { note: string }).note).not.toContain('Google Play');
+    expect(JSON.stringify(sent[0])).toContain(APP_APP_STORE_URL);
+  });
+
+  it('defaults to the Google Play card when platform is omitted', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    stubMetaSend(sent);
+
+    const supa = mockSupabase();
+    const res = await sendAppDownloadCard.handler({ language: 'en' }, ctxFor(supa.client));
+
+    expect((res as { platform: string }).platform).toBe('android');
+    expect(JSON.stringify(sent[0])).toContain(APP_PLAY_STORE_URL);
   });
 });
