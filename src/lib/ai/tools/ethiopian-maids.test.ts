@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   APP_APP_STORE_URL,
+  APP_SMART_LINK_URL,
   APP_PLAY_STORE_URL,
   buildAppDownloadCard,
   buildChoiceMessage,
@@ -92,12 +93,31 @@ describe('buildAppDownloadCard', () => {
     expect(card.headerImageUrl).toMatch(/^https:\/\/ethiopianmaids\.com\/badges\/app-store\.png$/);
   });
 
-  it('defaults to the Google Play card when platform is omitted', () => {
-    const card = buildAppDownloadCard('en');
-    expect(card.url).toBe(APP_PLAY_STORE_URL);
+  it.each(LANGS)('%s unknown-platform card uses the device-routing link', (lang) => {
+    const card = buildAppDownloadCard(lang, 'unknown');
+    expect(card.url).toBe(APP_SMART_LINK_URL);
+    expect(card.headerImageUrl).toMatch(/^https:\/\/ethiopianmaids\.com\/badges\/both-stores\.png$/);
   });
 
-  it.each(LANGS.flatMap((l) => (['android', 'ios'] as const).map((p) => [l, p] as const)))(
+  // The default is the whole safety property: the model guesses "android"
+  // rather than asking (seen in production), so omitting platform must NOT
+  // pick a store — it must route on the device instead.
+  it('defaults to the device-routing card when platform is omitted', () => {
+    const card = buildAppDownloadCard('en');
+    expect(card.url).toBe(APP_SMART_LINK_URL);
+    expect(card.url).not.toBe(APP_PLAY_STORE_URL);
+    expect(card.url).not.toBe(APP_APP_STORE_URL);
+  });
+
+  it('unknown-platform copy names neither store', () => {
+    const card = buildAppDownloadCard('en', 'unknown');
+    expect(card.bodyText).not.toContain('Google Play');
+    expect(card.bodyText).not.toContain('App Store');
+    expect(card.buttonText).not.toContain('Google Play');
+    expect(card.buttonText).not.toContain('App Store');
+  });
+
+  it.each(LANGS.flatMap((l) => (['android', 'ios', 'unknown'] as const).map((p) => [l, p] as const)))(
     '%s/%s card respects Meta cta_url limits',
     (lang, platform) => {
       const card = buildAppDownloadCard(lang, platform);
@@ -109,7 +129,7 @@ describe('buildAppDownloadCard', () => {
     },
   );
 
-  it.each(LANGS.flatMap((l) => (['android', 'ios'] as const).map((p) => [l, p] as const)))(
+  it.each(LANGS.flatMap((l) => (['android', 'ios', 'unknown'] as const).map((p) => [l, p] as const)))(
     '%s/%s footer no longer claims iOS is coming soon',
     (lang, platform) => {
       const card = buildAppDownloadCard(lang, platform);
@@ -300,14 +320,33 @@ describe('sendAppDownloadCard.handler', () => {
     expect(JSON.stringify(sent[0])).toContain(APP_APP_STORE_URL);
   });
 
-  it('defaults to the Google Play card when platform is omitted', async () => {
+  // Regression: production logs showed the model passing platform:"android"
+  // unprompted for an iPhone user. Omitting must route on the device, and a
+  // junk value must not be trusted into a store either.
+  it('omitted platform sends the device-routing card, not a guessed store', async () => {
     const sent: Array<Record<string, unknown>> = [];
     stubMetaSend(sent);
 
     const supa = mockSupabase();
     const res = await sendAppDownloadCard.handler({ language: 'en' }, ctxFor(supa.client));
 
-    expect((res as { platform: string }).platform).toBe('android');
-    expect(JSON.stringify(sent[0])).toContain(APP_PLAY_STORE_URL);
+    expect((res as { platform: string }).platform).toBe('unknown');
+    const payload = JSON.stringify(sent[0]);
+    expect(payload).toContain(APP_SMART_LINK_URL);
+    expect(payload).not.toContain(APP_PLAY_STORE_URL);
+    expect(payload).not.toContain(APP_APP_STORE_URL);
+    // The agent must not name a store it cannot know.
+    expect((res as { note: string }).note).not.toContain('Google Play button');
+  });
+
+  it.each(['IOS', 'windows', 'ios ', ''])('junk platform %p falls back to device-routing', async (junk) => {
+    const sent: Array<Record<string, unknown>> = [];
+    stubMetaSend(sent);
+
+    const supa = mockSupabase();
+    const res = await sendAppDownloadCard.handler({ language: 'en', platform: junk }, ctxFor(supa.client));
+
+    expect((res as { platform: string }).platform).toBe('unknown');
+    expect(JSON.stringify(sent[0])).toContain(APP_SMART_LINK_URL);
   });
 });

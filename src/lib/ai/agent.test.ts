@@ -158,20 +158,34 @@ describe('APP_INFO_BLOCK — iOS launch copy (regression: iOS app went live 2026
     expect(APP_INFO_BLOCK).toMatch(/iPhone[^.]*live/i);
   });
 
+  // The block is hard-wrapped for readability, so a phrase can straddle a
+  // newline. Match against a whitespace-collapsed copy: re-wrapping the
+  // prompt must never silently disarm a policy assertion.
+  const flat = APP_INFO_BLOCK.replace(/\s+/g, ' ');
+
   it('tells the model how to pick the platform argument', () => {
-    expect(APP_INFO_BLOCK).toMatch(/platform/i);
-    expect(APP_INFO_BLOCK).toMatch(/'ios'/);
-    expect(APP_INFO_BLOCK).toMatch(/'android'/);
-    expect(APP_INFO_BLOCK).toMatch(/Are you on iPhone or Android/i);
+    expect(flat).toMatch(/platform/i);
+    expect(flat).toMatch(/'ios'/);
+    expect(flat).toMatch(/'android'/);
+  });
+
+  // Regression: the model was seen in production passing platform:"android"
+  // unprompted for an iPhone user. Asking was tried and ignored, so the block
+  // must now tell it to OMIT platform and let the link route on the device.
+  it('tells the model to omit platform rather than guess or ask', () => {
+    expect(flat).toMatch(/OMIT platform/i);
+    expect(flat).toMatch(/do NOT guess/i);
+    expect(flat).not.toMatch(/Are you on iPhone or Android/i);
+    expect(flat).not.toMatch(/Defaults to android/i);
   });
 
   it('still forbids collecting registration details in chat and pasting the raw store URL', () => {
-    expect(APP_INFO_BLOCK).toMatch(/NEVER collect registration details over chat/i);
-    expect(APP_INFO_BLOCK).toMatch(/NEVER paste the store URL as plain text/i);
+    expect(flat).toMatch(/NEVER collect registration details over chat/i);
+    expect(flat).toMatch(/NEVER paste the store URL as plain text/i);
     expect(APP_INFO_BLOCK).not.toMatch(/https?:\/\//);
   });
 
   it('still tells the model send_app_download_card is available in every stage', () => {
-    expect(APP_INFO_BLOCK).toMatch(/send_app_download_card \(available\s+in every stage\)/);
+    expect(flat).toMatch(/send_app_download_card \(available in every stage\)/);
   });
 });

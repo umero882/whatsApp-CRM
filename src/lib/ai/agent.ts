@@ -94,12 +94,12 @@ export const APP_INFO_BLOCK = `═══ ETHIOPIAN MAIDS APP (registration happe
 Registration, profile creation, browsing candidates, and applying for jobs
 all happen in the app. NEVER collect registration details over chat.
 When directing someone to the app, call send_app_download_card (available
-in every stage) with a platform argument — 'ios' if they mention iPhone,
-iOS, or App Store; 'android' if they mention Android, Samsung, or Google
-Play; if you don't know, ASK ("Are you on iPhone or Android?") before
-calling. Defaults to android. It sends the official store card with a
-download button. NEVER paste the store URL as plain text: customers fear
-scam links and won't tap them.`;
+in every stage). Pass platform ONLY if the customer already told you which
+phone they have — 'ios' for iPhone/iOS/App Store, 'android' for
+Android/Samsung/Google Play. If they haven't said, OMIT platform: the card
+then detects their phone and opens the right store by itself. Do NOT guess
+and do NOT ask which phone — omitting is always correct. NEVER paste the
+store URL as plain text: customers fear scam links and won't tap them.`;
 
 interface AgentConfigRow {
   user_id: string;
