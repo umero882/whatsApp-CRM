@@ -733,17 +733,21 @@ export function MessageThread({
             <p className="truncate text-xs text-slate-400">{contact.phone}</p>
           </div>
           {/* Session timer badge — hidden on the narrowest phones so
-              the name + back arrow keep their room. */}
-          <Badge
-            variant="outline"
-            className={cn(
-              "ml-1 hidden gap-1 border-slate-700 text-[10px] sm:inline-flex sm:ml-2",
-              sessionInfo.expired ? "text-red-400" : "text-primary"
-            )}
-          >
-            <Clock className="h-3 w-3" />
-            {sessionInfo.remaining}
-          </Badge>
+              the name + back arrow keep their room. WhatsApp-only: the
+              24h session window is a WhatsApp Business API concept and
+              doesn't apply to email conversations. */}
+          {conversation.channel !== "email" && (
+            <Badge
+              variant="outline"
+              className={cn(
+                "ml-1 hidden gap-1 border-slate-700 text-[10px] sm:inline-flex sm:ml-2",
+                sessionInfo.expired ? "text-red-400" : "text-primary"
+              )}
+            >
+              <Clock className="h-3 w-3" />
+              {sessionInfo.remaining}
+            </Badge>
+          )}
         </div>
 
         <div className="flex items-center gap-2">

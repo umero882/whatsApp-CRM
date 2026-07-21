@@ -43,6 +43,12 @@ const FILTER_OPTIONS: { label: string; value: ConversationStatus | "all" }[] = [
   { label: "Closed", value: "closed" },
 ];
 
+const CHANNEL_FILTER_OPTIONS: { label: string; value: 'all' | 'whatsapp' | 'email' }[] = [
+  { label: "All", value: "all" },
+  { label: "WhatsApp", value: "whatsapp" },
+  { label: "Email", value: "email" },
+];
+
 export function ConversationList({
   activeConversationId,
   onSelect,
@@ -52,6 +58,7 @@ export function ConversationList({
 }: ConversationListProps) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ConversationStatus | "all">("all");
+  const [channelFilter, setChannelFilter] = useState<'all' | 'whatsapp' | 'email'>('all');
   const [loading, setLoading] = useState(true);
 
   // Keep the latest callback in a ref so the fetch effect below can
@@ -114,6 +121,10 @@ export function ConversationList({
       result = result.filter((c) => c.status === filter);
     }
 
+    if (channelFilter !== "all") {
+      result = result.filter((c) => (c.channel ?? "whatsapp") === channelFilter);
+    }
+
     if (search.trim()) {
       const q = search.toLowerCase();
       result = result.filter((c) => {
@@ -125,7 +136,7 @@ export function ConversationList({
     }
 
     return result;
-  }, [conversations, filter, search]);
+  }, [conversations, filter, channelFilter, search]);
 
   const handleSearchChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -142,6 +153,7 @@ export function ConversationList({
   );
 
   const activeFilter = FILTER_OPTIONS.find((o) => o.value === filter);
+  const activeChannelFilter = CHANNEL_FILTER_OPTIONS.find((o) => o.value === channelFilter);
 
   return (
     // w-full on mobile so the list occupies the whole viewport when it's
@@ -160,31 +172,59 @@ export function ConversationList({
           />
         </div>
 
-        <DropdownMenu>
-          <DropdownMenuTrigger className="inline-flex items-center justify-center h-7 gap-1 px-2 text-xs text-slate-400 hover:text-white rounded-md hover:bg-slate-800">
-              {activeFilter?.label ?? "All"}
-              <ChevronDown className="h-3 w-3" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="start"
-            className="border-slate-700 bg-slate-800"
-          >
-            {FILTER_OPTIONS.map((opt) => (
-              <DropdownMenuItem
-                key={opt.value}
-                onClick={() => setFilter(opt.value)}
-                className={cn(
-                  "text-sm",
-                  filter === opt.value
-                    ? "text-primary"
-                    : "text-slate-300"
-                )}
-              >
-                {opt.label}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <div className="flex items-center gap-1">
+          <DropdownMenu>
+            <DropdownMenuTrigger className="inline-flex items-center justify-center h-7 gap-1 px-2 text-xs text-slate-400 hover:text-white rounded-md hover:bg-slate-800">
+                {activeFilter?.label ?? "All"}
+                <ChevronDown className="h-3 w-3" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="border-slate-700 bg-slate-800"
+            >
+              {FILTER_OPTIONS.map((opt) => (
+                <DropdownMenuItem
+                  key={opt.value}
+                  onClick={() => setFilter(opt.value)}
+                  className={cn(
+                    "text-sm",
+                    filter === opt.value
+                      ? "text-primary"
+                      : "text-slate-300"
+                  )}
+                >
+                  {opt.label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger className="inline-flex items-center justify-center h-7 gap-1 px-2 text-xs text-slate-400 hover:text-white rounded-md hover:bg-slate-800">
+                {activeChannelFilter?.label ?? "All"}
+                <ChevronDown className="h-3 w-3" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="border-slate-700 bg-slate-800"
+            >
+              {CHANNEL_FILTER_OPTIONS.map((opt) => (
+                <DropdownMenuItem
+                  key={opt.value}
+                  onClick={() => setChannelFilter(opt.value)}
+                  className={cn(
+                    "text-sm",
+                    channelFilter === opt.value
+                      ? "text-primary"
+                      : "text-slate-300"
+                  )}
+                >
+                  {opt.label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
       {/* Conversation Items */}
@@ -276,7 +316,9 @@ function ConversationItem({
                   ? "IG"
                   : conversation.channel === "messenger"
                     ? "MSGR"
-                    : "TG"}
+                    : conversation.channel === "email"
+                      ? "EMAIL"
+                      : "TG"}
               </span>
             )}
           </span>
