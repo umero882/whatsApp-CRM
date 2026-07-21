@@ -50,6 +50,7 @@ export async function GET(request: Request) {
       { count: "exact" },
     )
     .eq("user_id", admin.userId)
+    .eq("channel", "whatsapp")
     .order("last_message_at", { ascending: false, nullsFirst: false })
     .range(offset, offset + limit - 1);
 

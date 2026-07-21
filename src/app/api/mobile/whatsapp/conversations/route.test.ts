@@ -83,6 +83,13 @@ describe("GET /api/mobile/whatsapp/conversations", () => {
     expect(h.state.conversationsEqArgs).toContainEqual(["user_id", "owner-1"]);
   });
 
+  it("filters to channel=whatsapp", async () => {
+    vi.mocked(verifyMobileAdmin).mockResolvedValue({ userId: "owner-1", firebaseUid: "u" });
+    h.state.conversations = { data: [], count: 0, error: null };
+    await GET(req());
+    expect(h.state.conversationsEqArgs).toContainEqual(["channel", "whatsapp"]);
+  });
+
   it("short-circuits to empty when search matches no contacts", async () => {
     vi.mocked(verifyMobileAdmin).mockResolvedValue({ userId: "owner-1", firebaseUid: "u" });
     h.state.contacts = { data: [], error: null };

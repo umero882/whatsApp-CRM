@@ -31,7 +31,8 @@ export async function GET(request: Request) {
     db
       .from("messages")
       .select("id, conversations!inner(user_id)", { count: "exact", head: true })
-      .eq("conversations.user_id", admin.userId);
+      .eq("conversations.user_id", admin.userId)
+      .eq("conversations.channel", "whatsapp");
 
   type CountQuery = ReturnType<typeof base>;
 
