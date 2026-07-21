@@ -10,9 +10,9 @@
 import { sendTextMessage } from '@/lib/whatsapp/meta-api';
 import { sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
 
-export type Channel = 'whatsapp' | 'instagram' | 'messenger' | 'telegram';
+export type Channel = 'whatsapp' | 'instagram' | 'messenger' | 'telegram' | 'email';
 
-export const CHANNELS: readonly Channel[] = ['whatsapp', 'instagram', 'messenger', 'telegram'];
+export const CHANNELS: readonly Channel[] = ['whatsapp', 'instagram', 'messenger', 'telegram', 'email'];
 
 export function isChannel(v: unknown): v is Channel {
   return typeof v === 'string' && (CHANNELS as readonly string[]).includes(v);
@@ -74,6 +74,7 @@ export async function sendChannelText(args: SendChannelTextArgs): Promise<{ mess
     case 'instagram':
     case 'messenger':
     case 'telegram':
+    case 'email':
       throw new ChannelNotImplementedError(args.channel);
   }
 }

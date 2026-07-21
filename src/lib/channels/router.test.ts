@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CHANNELS,
   ChannelNotImplementedError,
   filterToolsForChannel,
   isChannel,
@@ -47,5 +48,18 @@ describe('sendChannelText', () => {
   it('requires whatsapp credentials for whatsapp sends', async () => {
     await expect(sendChannelText({ channel: 'whatsapp', to: '+971585868560', text: 'hi' }))
       .rejects.toThrow(/credentials missing/);
+  });
+});
+
+describe('channels/router email', () => {
+  it('email is a known channel', () => {
+    expect(CHANNELS).toContain('email');
+    expect(isChannel('email')).toBe(true);
+  });
+
+  it('filters WhatsApp-only tools out for email', () => {
+    const tools = [{ name: 'send_maid_cards' }, { name: 'search_knowledge_base' }];
+    const kept = filterToolsForChannel(tools, 'email').map((t) => t.name);
+    expect(kept).toEqual(['search_knowledge_base']);
   });
 });

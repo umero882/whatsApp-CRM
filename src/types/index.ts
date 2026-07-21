@@ -68,7 +68,7 @@ export interface ContactNote {
 
 export type ConversationStatus = 'open' | 'pending' | 'closed';
 
-export type ConversationChannel = 'whatsapp' | 'instagram' | 'messenger' | 'telegram';
+export type ConversationChannel = 'whatsapp' | 'instagram' | 'messenger' | 'telegram' | 'email';
 
 export interface Conversation {
   id: string;
