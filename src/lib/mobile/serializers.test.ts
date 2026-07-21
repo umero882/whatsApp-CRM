@@ -3,6 +3,7 @@ import {
   aiActive,
   roleForMessage,
   serializeConversation,
+  serializeEmailConversation,
   serializeMessage,
 } from "./serializers";
 
@@ -70,6 +71,20 @@ describe("serializeConversation", () => {
     expect(out.phone).toBe("");
     expect(out.unread_count).toBe(0);
     expect(out.ai_active).toBe(true);
+  });
+});
+
+describe("serializeEmailConversation", () => {
+  it("maps external_id → email and includes subject", () => {
+    const dto = serializeEmailConversation({
+      id: "c1", subject: "How do I register?", last_message_text: "hi",
+      last_message_at: "2026-07-21T00:00:00Z", unread_count: 2, ai_paused_until: null,
+      contact: { external_id: "jane@example.com", name: "Jane" },
+    });
+    expect(dto).toEqual({
+      id: "c1", email: "jane@example.com", name: "Jane", subject: "How do I register?",
+      last_message_text: "hi", last_message_at: "2026-07-21T00:00:00Z", unread_count: 2, ai_active: true,
+    });
   });
 });
 

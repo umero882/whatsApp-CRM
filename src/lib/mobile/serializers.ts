@@ -55,6 +55,33 @@ export function serializeConversation(row: ConversationRow) {
   };
 }
 
+export interface EmailConvRow {
+  id: string;
+  subject?: string | null;
+  last_message_text?: string | null;
+  last_message_at?: string | null;
+  unread_count?: number | null;
+  ai_paused_until?: string | null;
+  contact?:
+    | { external_id?: string | null; name?: string | null }
+    | { external_id?: string | null; name?: string | null }[]
+    | null;
+}
+
+export function serializeEmailConversation(row: EmailConvRow) {
+  const contact = Array.isArray(row.contact) ? row.contact[0] : row.contact;
+  return {
+    id: row.id,
+    email: contact?.external_id ?? "",
+    name: contact?.name ?? null,
+    subject: row.subject ?? null,
+    last_message_text: row.last_message_text ?? null,
+    last_message_at: row.last_message_at ?? null,
+    unread_count: row.unread_count ?? 0,
+    ai_active: aiActive(row.ai_paused_until),
+  };
+}
+
 export interface MessageRow {
   id: string;
   sender_type: string | null;
