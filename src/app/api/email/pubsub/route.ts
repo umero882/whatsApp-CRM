@@ -4,7 +4,7 @@ import { resolveOwnerUserId } from '@/lib/mobile/auth';
 import { verifyPubSubPush } from '@/lib/email/oidc';
 import { makeGmailClient } from '@/lib/email/gmail-client';
 import { getRefreshToken } from '@/lib/email/oauth';
-import { parseEmail } from '@/lib/email/parse';
+import { parseEmail, customerAddress } from '@/lib/email/parse';
 import { shouldDropEmail, alreadyIngested } from '@/lib/email/filters';
 import { isCustomerEmail } from '@/lib/email/relevance';
 import { findOrCreateEmailContact, findOrCreateEmailConversation, insertInboundEmailMessage } from '@/lib/email/persist';
@@ -59,7 +59,7 @@ export async function POST(request: Request): Promise<Response> {
       }
       if (!isCustomer) { await client.addLabel(id, 'Not-Customer'); skipped++; continue; }
 
-      const contact = await findOrCreateEmailContact(sb, ownerUserId, parsed.replyTo ?? parsed.fromEmail, parsed.fromName);
+      const contact = await findOrCreateEmailContact(sb, ownerUserId, customerAddress(parsed), parsed.fromName);
       const conv = await findOrCreateEmailConversation(sb, ownerUserId, contact.id, parsed.subject);
       await insertInboundEmailMessage(sb, {
         conversationId: conv.id, text: parsed.text, messageId: parsed.messageId,

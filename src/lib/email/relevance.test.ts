@@ -31,4 +31,16 @@ describe('isCustomerEmail', () => {
     expect(r.isCustomer).toBe(true);
     expect(r.reason).toBe('llm_related');
   });
+
+  it('looks up the known user by Reply-To when it differs from From', async () => {
+    fetchSpy.mockReset();
+    fetchSpy.mockResolvedValueOnce({ ok: true, json: async () => ({ data: { profiles: [{ id: 'u1' }] } }) });
+    const withReplyTo: ParsedEmail = { ...parsed, fromEmail: 'forwarder@relay.com', replyTo: 'jane@example.com' };
+    const r = await isCustomerEmail({ parsed: withReplyTo, hasuraUrl: 'h', hasuraSecret: 's', provider });
+    expect(r.isCustomer).toBe(true);
+    expect(r.reason).toBe('known_user');
+    // The Hasura profiles lookup must query the Reply-To address, not From.
+    const body = JSON.parse((fetchSpy.mock.calls[0][1] as { body: string }).body);
+    expect(body.variables.email).toBe('jane@example.com');
+  });
 });

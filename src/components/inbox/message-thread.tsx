@@ -441,16 +441,29 @@ export function MessageThread({
       setReplyTo(null);
 
       try {
-        const res = await fetch("/api/whatsapp/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            conversation_id: conversation.id,
-            message_type: "text",
-            content_text: text,
-            reply_to_message_id: replyToId,
-          }),
-        });
+        // Email conversations reply out as threaded email; WhatsApp goes
+        // through the Graph API. Route by channel so a human reply on an
+        // email thread isn't mis-sent through WhatsApp.
+        const res =
+          conversation.channel === "email"
+            ? await fetch("/api/email/send", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  conversation_id: conversation.id,
+                  content_text: text,
+                }),
+              })
+            : await fetch("/api/whatsapp/send", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  conversation_id: conversation.id,
+                  message_type: "text",
+                  content_text: text,
+                  reply_to_message_id: replyToId,
+                }),
+              });
 
         const payload = await res.json().catch(() => ({}));
 
@@ -516,17 +529,30 @@ export function MessageThread({
       onNewMessage(optimisticMsg);
 
       try {
-        const res = await fetch("/api/whatsapp/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            conversation_id: conversation.id,
-            message_type: "template",
-            template_name: template.name,
-            template_params: params,
-            content_text: renderedBody,
-          }),
-        });
+        // Templates are a WhatsApp concept. On an email conversation there's
+        // no template API — send the rendered body as plain email text so the
+        // reply still lands in the right channel.
+        const res =
+          conversation.channel === "email"
+            ? await fetch("/api/email/send", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  conversation_id: conversation.id,
+                  content_text: renderedBody,
+                }),
+              })
+            : await fetch("/api/whatsapp/send", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  conversation_id: conversation.id,
+                  message_type: "template",
+                  template_name: template.name,
+                  template_params: params,
+                  content_text: renderedBody,
+                }),
+              });
 
         const payload = await res.json().catch(() => ({}));
 

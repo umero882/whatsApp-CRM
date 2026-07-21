@@ -12,6 +12,17 @@ export interface ParsedEmail {
   autoSubmitted: boolean;
 }
 
+/**
+ * The single canonical address for a customer: where a reply must be sent AND
+ * the identity we look up / key the contact on. `Reply-To` wins over `From`
+ * (senders set it precisely so replies reach them), falling back to `From`.
+ * Both the relevance gate's known-user lookup and the contact/reply target
+ * MUST resolve through here so they cannot disagree.
+ */
+export function customerAddress(parsed: ParsedEmail): string {
+  return parsed.replyTo || parsed.fromEmail;
+}
+
 const stripAngles = (id: string | undefined): string => (id ?? '').replace(/^<|>$/g, '').trim();
 const firstAddr = (a: AddressObject | AddressObject[] | undefined): { address: string; name: string } | null => {
   const obj = Array.isArray(a) ? a[0] : a;

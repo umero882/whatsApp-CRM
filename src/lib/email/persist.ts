@@ -1,28 +1,49 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+// Postgres unique_violation. The find-then-insert below can race a concurrent
+// Gmail push; the loser hits the unique index (migration 022) and we re-select
+// the winner rather than erroring the whole batch.
+const UNIQUE_VIOLATION = '23505';
+
 export async function findOrCreateEmailContact(
   sb: SupabaseClient, userId: string, email: string, name: string | null,
 ): Promise<{ id: string }> {
-  const { data: existing } = await sb.from('contacts')
+  const selectExisting = () => sb.from('contacts')
     .select('id').eq('user_id', userId).eq('external_id', email).maybeSingle();
+
+  const { data: existing } = await selectExisting();
   if (existing) return { id: existing.id };
   const { data, error } = await sb.from('contacts')
     .insert({ user_id: userId, external_id: email, name: name || email })
     .select().single();
-  if (error) throw new Error(`create email contact failed: ${error.message}`);
+  if (error) {
+    if (error.code === UNIQUE_VIOLATION) {
+      const { data: raced } = await selectExisting();
+      if (raced) return { id: raced.id };
+    }
+    throw new Error(`create email contact failed: ${error.message}`);
+  }
   return { id: data.id };
 }
 
 export async function findOrCreateEmailConversation(
   sb: SupabaseClient, userId: string, contactId: string, subject: string,
 ): Promise<{ id: string }> {
-  const { data: existing } = await sb.from('conversations')
+  const selectExisting = () => sb.from('conversations')
     .select('id').eq('user_id', userId).eq('contact_id', contactId).eq('channel', 'email').maybeSingle();
+
+  const { data: existing } = await selectExisting();
   if (existing) return { id: existing.id };
   const { data, error } = await sb.from('conversations')
     .insert({ user_id: userId, contact_id: contactId, channel: 'email', subject: subject || null })
     .select().single();
-  if (error) throw new Error(`create email conversation failed: ${error.message}`);
+  if (error) {
+    if (error.code === UNIQUE_VIOLATION) {
+      const { data: raced } = await selectExisting();
+      if (raced) return { id: raced.id };
+    }
+    throw new Error(`create email conversation failed: ${error.message}`);
+  }
   return { id: data.id };
 }
 

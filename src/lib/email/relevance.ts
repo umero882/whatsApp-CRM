@@ -1,4 +1,4 @@
-import type { ParsedEmail } from './parse';
+import { customerAddress, type ParsedEmail } from './parse';
 import type { ChatProvider } from '@/lib/ai/providers/types';
 
 const PROFILE_BY_EMAIL = `query($email:String!){ profiles(where:{email:{_eq:$email}}, limit:1){ id } }`;
@@ -25,7 +25,9 @@ export async function isCustomerEmail(args: {
   parsed: ParsedEmail; hasuraUrl: string; hasuraSecret: string; provider: ChatProvider;
 }): Promise<{ isCustomer: boolean; reason: string }> {
   const { parsed, hasuraUrl, hasuraSecret, provider } = args;
-  if (hasuraUrl && hasuraSecret && (await isKnownUser(hasuraUrl, hasuraSecret, parsed.fromEmail)))
+  // Look up the SAME address we reply to / key the contact on (Reply-To ?? From),
+  // so "known customer" and the reply target never disagree.
+  if (hasuraUrl && hasuraSecret && (await isKnownUser(hasuraUrl, hasuraSecret, customerAddress(parsed))))
     return { isCustomer: true, reason: 'known_user' };
 
   const text = await provider.chat({

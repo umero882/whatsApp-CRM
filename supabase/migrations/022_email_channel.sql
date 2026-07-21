@@ -39,3 +39,28 @@ CREATE TABLE IF NOT EXISTS email_oauth (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_email_message_id
   ON messages(message_id)
   WHERE message_id IS NOT NULL AND email_thread_id IS NOT NULL;
+
+-- 6. Race guards for the ingestion pipeline. Two overlapping Gmail pushes can
+--    read the same startHistoryId concurrently; without a unique key both can
+--    create a duplicate contact + an empty duplicate conversation for a
+--    first-time sender before the message-level dedup above kicks in. These
+--    make findOrCreate idempotent at the DB layer (the app also re-selects on
+--    23505 — see persist.ts).
+--
+--    Contact key: (user_id, external_id). Only the email pipeline populates
+--    contacts.external_id (WhatsApp never sets it), so the partial predicate
+--    leaves every legacy WhatsApp contact (external_id NULL) untouched — the
+--    unique index cannot fail on existing data. Replaces 019's non-unique
+--    idx_contacts_external_id, which covered the identical predicate.
+DROP INDEX IF EXISTS idx_contacts_external_id;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_contacts_user_external_id
+  ON contacts(user_id, external_id)
+  WHERE external_id IS NOT NULL;
+
+--    Conversation key: one email thread per (user_id, contact_id). Scoped to
+--    channel='email' so existing WhatsApp conversations (of which there may be
+--    legitimate historical duplicates) are never constrained — no email rows
+--    exist yet, so this cannot fail on apply.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_conversations_email_contact
+  ON conversations(user_id, contact_id)
+  WHERE channel = 'email';
