@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-const sendSpy = vi.fn(async () => ({ id: 'gmail-sent-1' }));
+const sendSpy = vi.fn(async (_args: { raw: string; threadId?: string }) => ({ id: 'gmail-sent-1' }));
 vi.mock('./gmail-client', () => ({ makeGmailClient: () => ({ send: sendSpy }) }));
 vi.mock('./oauth', () => ({ getRefreshToken: async () => 'rt' }));
 vi.mock('@/lib/flows/admin-client', () => ({
