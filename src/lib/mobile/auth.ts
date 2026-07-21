@@ -72,7 +72,7 @@ export function _resetMobileAuthCacheForTests(): void {
  * explicit env override; otherwise fall back to the sole connected
  * `whatsapp_config` row (this is a single-WhatsApp-number business).
  */
-async function resolveOwnerUserId(): Promise<string> {
+export async function resolveOwnerUserId(): Promise<string> {
   const envId = process.env.CRM_WHATSAPP_OWNER_USER_ID?.trim();
   if (envId) return envId;
   if (_ownerId) return _ownerId;
