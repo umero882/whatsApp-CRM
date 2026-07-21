@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   CHANNELS,
   ChannelNotImplementedError,
@@ -6,6 +6,9 @@ import {
   isChannel,
   sendChannelText,
 } from './router';
+import { sendEmailReply } from '@/lib/email/send';
+
+vi.mock('@/lib/email/send', () => ({ sendEmailReply: vi.fn(async () => ({ messageId: 'eml-9' })) }));
 
 const TOOLS = [
   { name: 'search_maids' },
@@ -61,5 +64,13 @@ describe('channels/router email', () => {
     const tools = [{ name: 'send_maid_cards' }, { name: 'search_knowledge_base' }];
     const kept = filterToolsForChannel(tools, 'email').map((t) => t.name);
     expect(kept).toEqual(['search_knowledge_base']);
+  });
+
+  it('email channel delegates to sendEmailReply with the conversation context', async () => {
+    const res = await sendChannelText({
+      channel: 'email', to: 'jane@example.com', text: 'hi', email: { conversationId: 'conv-1' },
+    });
+    expect(res).toEqual({ messageId: 'eml-9' });
+    expect(sendEmailReply).toHaveBeenCalledWith({ conversationId: 'conv-1', to: 'jane@example.com', text: 'hi' });
   });
 });

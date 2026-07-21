@@ -53,6 +53,8 @@ export interface SendChannelTextArgs {
   text: string;
   /** WhatsApp transport credentials (required when channel=whatsapp). */
   whatsapp?: { phoneNumberId: string; accessToken: string } | null;
+  /** Required when channel==='email'. Threading is loaded from this conversation. */
+  email?: { conversationId: string } | null;
 }
 
 /**
@@ -71,10 +73,15 @@ export async function sendChannelText(args: SendChannelTextArgs): Promise<{ mess
         text: args.text,
       });
     }
+    case 'email': {
+      if (!args.email) throw new Error('email context missing for email send');
+      // Lazy import avoids a static import cycle.
+      const { sendEmailReply } = await import('@/lib/email/send');
+      return sendEmailReply({ conversationId: args.email.conversationId, to: args.to, text: args.text });
+    }
     case 'instagram':
     case 'messenger':
     case 'telegram':
-    case 'email':
       throw new ChannelNotImplementedError(args.channel);
   }
 }
