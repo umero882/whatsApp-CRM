@@ -66,6 +66,10 @@ const ALL_STAGE_TOOLS: ReadonlySet<string> = new Set([
   // Policy/process questions ("how do visas work?") arrive at ANY
   // stage — knowledge lookups must never be stage-gated.
   'search_knowledge_base',
+  // The agent must be able to hand off to a human at ANY stage —
+  // including first contact — when it genuinely cannot resolve the
+  // issue (refunds/account changes, safety/legal, angry customer, etc).
+  'escalate_to_human',
 ]);
 
 /**

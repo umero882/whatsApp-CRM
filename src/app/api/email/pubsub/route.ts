@@ -30,7 +30,7 @@ export async function POST(request: Request): Promise<Response> {
   if (!startHistoryId) return NextResponse.json({ error: 'no history cursor — run watch cron first' }, { status: 409 });
 
   const ids = await client.historyList(startHistoryId);
-  let created = 0, dropped = 0, skipped = 0;
+  let created = 0, dropped = 0, skipped = 0, errored = 0;
 
   // A cheap provider for the relevance gate (reuse ai_provider_config).
   const { data: prov } = await sb.from('ai_provider_config').select('provider, model, base_url, encrypted_api_key').eq('user_id', ownerUserId).maybeSingle();
@@ -44,7 +44,8 @@ export async function POST(request: Request): Promise<Response> {
       if (drop.drop) { dropped++; continue; }
       if (await alreadyIngested(sb, parsed.messageId)) { skipped++; continue; }
 
-      // Relevance gate — needs a provider; if unavailable, default to persisting (safe: agent still gates auto-send).
+      // Relevance gate — needs a provider; if unavailable we cannot classify
+      // relevance, so persist and let the agent answer/escalate.
       let isCustomer = true;
       if (prov) {
         const { decrypt } = await import('@/lib/whatsapp/encryption');
@@ -71,17 +72,25 @@ export async function POST(request: Request): Promise<Response> {
       runAgent(conv.id).catch((e) => console.error('[email] runAgent failed', e));
     } catch (e) {
       console.error('[email] message pipeline failed', id, e);
-      skipped++;
+      errored++;
     }
   }
 
-  // Advance the cursor to the notification's historyId.
-  try {
-    const body = await request.clone().json();
-    const decoded = JSON.parse(Buffer.from(body?.message?.data ?? '', 'base64').toString('utf8'));
-    if (decoded?.historyId)
-      await sb.from('email_sync_state').update({ last_history_id: String(decoded.historyId), updated_at: new Date().toISOString() }).eq('mailbox', MAILBOX);
-  } catch { /* non-fatal */ }
+  // Advance the cursor to the notification's historyId — but ONLY when every
+  // message in this batch was handled cleanly. A hard failure (errored > 0)
+  // means we must NOT move the cursor past the failed message, or it is
+  // permanently dropped. Leaving the cursor in place makes the next Pub/Sub
+  // push re-fetch from the same startHistoryId; already-succeeded messages
+  // are safely re-skipped via the messages.message_id unique index /
+  // alreadyIngested() dedup check, so retrying the whole batch is idempotent.
+  if (errored === 0) {
+    try {
+      const body = await request.clone().json();
+      const decoded = JSON.parse(Buffer.from(body?.message?.data ?? '', 'base64').toString('utf8'));
+      if (decoded?.historyId)
+        await sb.from('email_sync_state').update({ last_history_id: String(decoded.historyId), updated_at: new Date().toISOString() }).eq('mailbox', MAILBOX);
+    } catch { /* non-fatal */ }
+  }
 
-  return NextResponse.json({ processed: ids.length, created, dropped, skipped });
+  return NextResponse.json({ processed: ids.length, created, dropped, skipped, errored });
 }
