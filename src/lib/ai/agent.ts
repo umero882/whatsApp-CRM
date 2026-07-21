@@ -128,9 +128,22 @@ interface ConversationRow {
   channel: string | null;
   ai_paused_until: string | null;
   contact:
-    | { id: string; name: string | null; phone: string }[]
-    | { id: string; name: string | null; phone: string }
+    | { id: string; name: string | null; phone: string; external_id: string | null }[]
+    | { id: string; name: string | null; phone: string; external_id: string | null }
     | null;
+}
+
+/**
+ * Resolve the outbound destination for a channel from the contact row.
+ * WhatsApp (and every other phone-based channel) sends to `phone`;
+ * email sends to the contact's `external_id` (the email address).
+ * Pure — exported for tests (see agent-email.test.ts).
+ */
+export function resolveChannelDestination(
+  channel: string,
+  contact: { phone: string | null; external_id: string | null },
+): string {
+  return channel === 'email' ? (contact.external_id ?? '') : (contact.phone ?? '');
 }
 
 interface HistoryRow {
@@ -167,22 +180,24 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   // ─── Load conversation + contact ────────────────────────────────────
   const { data: convRaw, error: convErr } = await sb
     .from('conversations')
-    .select('id, user_id, channel, ai_paused_until, contact:contacts(id, name, phone)')
+    .select('id, user_id, channel, ai_paused_until, contact:contacts(id, name, phone, external_id)')
     .eq('id', conversationId)
     .maybeSingle();
   if (convErr) throw new Error(`load conversation: ${convErr.message}`);
   if (!convRaw) return { kind: 'skipped', reason: 'conversation_not_found' };
   const conv = convRaw as ConversationRow;
   const contact = Array.isArray(conv.contact) ? conv.contact[0] : conv.contact;
-  if (!contact?.phone) return { kind: 'skipped', reason: 'no_contact_phone' };
-
-  if (conv.ai_paused_until && new Date(conv.ai_paused_until).getTime() > Date.now()) {
-    return { kind: 'skipped', reason: 'ai_paused' };
-  }
 
   // Which platform this thread lives on. Pre-migration rows and the
   // WhatsApp webhook both resolve to 'whatsapp'.
   const channel: Channel = isChannel(conv.channel) ? conv.channel : 'whatsapp';
+
+  const destination = contact ? resolveChannelDestination(channel, contact) : '';
+  if (!contact || !destination) return { kind: 'skipped', reason: 'no_contact_destination' };
+
+  if (conv.ai_paused_until && new Date(conv.ai_paused_until).getTime() > Date.now()) {
+    return { kind: 'skipped', reason: 'ai_paused' };
+  }
 
   // ─── Load agent + provider + WhatsApp config ────────────────────────
   const { data: agentCfg, error: agentErr } = await sb
@@ -337,7 +352,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
           return { kind: 'replied', text: '[interactive choices]', stage, turns: turn + 1, toolsUsed };
         }
         await postAndPersist(sb, waCfg, accessToken, contact, conv.id,
-          stageHoldingReply(stage, language), channel);
+          stageHoldingReply(stage, language), channel, destination);
         return { kind: 'failed', reason: `provider: ${e.message}` };
       }
       throw e;
@@ -402,7 +417,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
         }
       }
       console.log('[ai-agent] turn', turn + 1, 'reply:', text.slice(0, 120));
-      await postAndPersist(sb, waCfg, accessToken, contact, conv.id, text, channel);
+      await postAndPersist(sb, waCfg, accessToken, contact, conv.id, text, channel, destination);
       const escalated = toolsUsed.includes('escalate_to_human');
       return escalated
         ? { kind: 'escalated', reason: 'escalate_to_human tool used' }
@@ -468,7 +483,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     return { kind: 'replied', text: '[interactive choices]', stage, turns: agent.max_turns, toolsUsed };
   }
   await postAndPersist(sb, waCfg, accessToken, contact, conv.id,
-    stageHoldingReply(stage, language), channel);
+    stageHoldingReply(stage, language), channel, destination);
   return { kind: 'failed', reason: 'max_turns_exceeded' };
 }
 
@@ -1024,14 +1039,16 @@ async function postAndPersist(
   conversationId: string,
   text: string,
   channel: Channel = 'whatsapp',
+  destination: string = contact.phone,
 ): Promise<void> {
   let waMessageId = '';
   try {
     const r = await sendChannelText({
       channel,
-      to: contact.phone,
+      to: destination,
       text,
-      whatsapp: { phoneNumberId: waCfg.phone_number_id, accessToken },
+      whatsapp: channel === 'whatsapp' ? { phoneNumberId: waCfg.phone_number_id, accessToken } : null,
+      email: channel === 'email' ? { conversationId } : null,
     });
     waMessageId = r.messageId;
   } catch (e) {
