@@ -29,4 +29,25 @@ describe('parseEmail', () => {
     const p = await parseEmail(toB64Url(raw));
     expect(p.autoSubmitted).toBe(true);
   });
+
+  // Regression: mailparser parses Delivered-To as an ADDRESS header (object,
+  // or an array of objects when it repeats — normal on Gmail/forwarded mail),
+  // never a plain string. The old `as string`.toLowerCase() crashed the whole
+  // ingestion pipeline on every real message.
+  it('handles Delivered-To address header (repeated) without crashing', async () => {
+    const raw = [
+      'From: Jane Doe <jane@example.com>',
+      'To: support@ethiopianmaids.com',
+      'Delivered-To: nextechlabs.dev@gmail.com',
+      'Delivered-To: Forwarded <forwarded@ethiopianmaids.com>',
+      'Subject: How do I register?',
+      'Message-ID: <abc123@mail.example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Hi',
+    ].join('\r\n');
+    const p = await parseEmail(toB64Url(raw));
+    expect(p.toAddresses).toContain('nextechlabs.dev@gmail.com');
+    expect(p.toAddresses).toContain('forwarded@ethiopianmaids.com');
+  });
 });

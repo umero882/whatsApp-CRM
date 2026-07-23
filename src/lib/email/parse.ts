@@ -39,8 +39,15 @@ export async function parseEmail(rawBase64Url: string): Promise<ParsedEmail> {
   const toList: string[] = [];
   for (const a of ([] as AddressObject[]).concat(mail.to ?? [], mail.cc ?? []))
     for (const v of a.value) if (v.address) toList.push(v.address.toLowerCase());
-  const deliveredTo = (mail.headers.get('delivered-to') as string | undefined)?.toLowerCase();
-  if (deliveredTo) toList.push(deliveredTo);
+  // mailparser treats Delivered-To as an ADDRESS header, so `.get()` yields an
+  // AddressObject (or an array of them when it repeats — normal on Gmail /
+  // forwarded mail), not a plain string. Handle object/array/string defensively;
+  // a bare `.toLowerCase()` here crashed the whole pipeline on every real message.
+  const deliveredToRaw = mail.headers.get('delivered-to') as
+    | AddressObject | AddressObject[] | string | undefined;
+  for (const a of ([] as (AddressObject | string)[]).concat(deliveredToRaw ?? []))
+    if (typeof a === 'string') toList.push(a.toLowerCase());
+    else for (const v of a.value ?? []) if (v.address) toList.push(v.address.toLowerCase());
 
   const autoSubmittedHeader = String(mail.headers.get('auto-submitted') ?? '').toLowerCase();
   const precedence = String(mail.headers.get('precedence') ?? '').toLowerCase();
