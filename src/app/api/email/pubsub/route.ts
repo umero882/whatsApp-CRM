@@ -71,8 +71,23 @@ export async function POST(request: Request): Promise<Response> {
       // Fire-and-forget agent, exactly like the WhatsApp webhook.
       runAgent(conv.id).catch((e) => console.error('[email] runAgent failed', e));
     } catch (e) {
-      console.error('[email] message pipeline failed', id, e);
-      errored++;
+      // A Gmail 404 ("Requested entity was not found") is PERMANENT — the
+      // message was deleted/moved and can never be fetched. Counting it as
+      // `errored` would wedge the cursor forever (errored>0 blocks the advance
+      // below), so every push would re-fetch the whole history and never make
+      // progress. Treat it as a skip. Transient failures (429/5xx/network) still
+      // fall through to `errored` and correctly hold the cursor for retry (I2).
+      const status = (e as { code?: unknown; status?: unknown; response?: { status?: unknown } })?.code
+        ?? (e as { status?: unknown })?.status
+        ?? (e as { response?: { status?: unknown } })?.response?.status;
+      const gone = status === 404 || /requested entity was not found/i.test((e as { message?: string })?.message ?? '');
+      if (gone) {
+        console.warn('[email] message gone (404), skipping', id);
+        skipped++;
+      } else {
+        console.error('[email] message pipeline failed', id, e);
+        errored++;
+      }
     }
   }
 

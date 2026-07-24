@@ -51,3 +51,17 @@ it('creates an email conversation and dispatches the agent', async () => {
   expect(json.created).toBe(1);
   expect(runAgent).toHaveBeenCalledWith('conv-1');
 });
+
+it('treats a Gmail 404 (message gone) as skip, not errored — so the cursor can advance', async () => {
+  getRaw.mockRejectedValueOnce({ code: 404, message: 'Requested entity was not found.' });
+  const req = new Request('http://x/api/email/pubsub', {
+    method: 'POST',
+    body: JSON.stringify({ message: { data: Buffer.from(JSON.stringify({ historyId: '21' })).toString('base64') } }),
+  });
+  const res = await POST(req);
+  const json = await res.json();
+  expect(res.status).toBe(200);
+  expect(json.errored).toBe(0); // permanent 404 must NOT hold the cursor
+  expect(json.skipped).toBe(1);
+  expect(json.created).toBe(0);
+});
