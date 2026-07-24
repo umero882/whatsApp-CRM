@@ -9,6 +9,7 @@ import { useTotalUnread } from "@/hooks/use-total-unread";
 import {
   LayoutDashboard,
   MessageSquare,
+  Mail,
   Phone,
   Users,
   GitBranch,
@@ -47,6 +48,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/inbox", label: "Inbox", icon: MessageSquare },
+  { href: "/email", label: "Email", icon: Mail },
   { href: "/calls", label: "Calls", icon: Phone, beta: true },
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/pipelines", label: "Pipelines", icon: GitBranch },

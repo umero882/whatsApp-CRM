@@ -28,6 +28,12 @@ interface ConversationListProps {
    * or the tab was throttled. Optional so existing callers keep working.
    */
   resyncToken?: number;
+  /**
+   * When set, the list is hard-scoped to a single channel and the channel
+   * filter dropdown is hidden (used by the dedicated /email view). Overrides
+   * the user-selectable channel filter.
+   */
+  lockChannel?: "whatsapp" | "email";
 }
 
 const STATUS_COLORS: Record<ConversationStatus, string> = {
@@ -55,11 +61,16 @@ export function ConversationList({
   conversations,
   onConversationsLoaded,
   resyncToken = 0,
+  lockChannel,
 }: ConversationListProps) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ConversationStatus | "all">("all");
   const [channelFilter, setChannelFilter] = useState<'all' | 'whatsapp' | 'email'>('all');
   const [loading, setLoading] = useState(true);
+
+  // When a channel is locked (e.g. the /email view), that scope wins over the
+  // user-selectable dropdown, which is hidden below.
+  const effectiveChannel = lockChannel ?? channelFilter;
 
   // Keep the latest callback in a ref so the fetch effect below can
   // have a stable, empty-dep identity. Previously the fetch useCallback
@@ -121,8 +132,8 @@ export function ConversationList({
       result = result.filter((c) => c.status === filter);
     }
 
-    if (channelFilter !== "all") {
-      result = result.filter((c) => (c.channel ?? "whatsapp") === channelFilter);
+    if (effectiveChannel !== "all") {
+      result = result.filter((c) => (c.channel ?? "whatsapp") === effectiveChannel);
     }
 
     if (search.trim()) {
@@ -136,7 +147,7 @@ export function ConversationList({
     }
 
     return result;
-  }, [conversations, filter, channelFilter, search]);
+  }, [conversations, filter, effectiveChannel, search]);
 
   const handleSearchChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -199,31 +210,36 @@ export function ConversationList({
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger className="inline-flex items-center justify-center h-7 gap-1 px-2 text-xs text-slate-400 hover:text-white rounded-md hover:bg-slate-800">
-                {activeChannelFilter?.label ?? "All"}
-                <ChevronDown className="h-3 w-3" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="start"
-              className="border-slate-700 bg-slate-800"
-            >
-              {CHANNEL_FILTER_OPTIONS.map((opt) => (
-                <DropdownMenuItem
-                  key={opt.value}
-                  onClick={() => setChannelFilter(opt.value)}
-                  className={cn(
-                    "text-sm",
-                    channelFilter === opt.value
-                      ? "text-primary"
-                      : "text-slate-300"
-                  )}
-                >
-                  {opt.label}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {/* Channel filter — hidden when the view is hard-locked to a
+              single channel (e.g. /email), where the dropdown would be a
+              no-op. */}
+          {!lockChannel && (
+            <DropdownMenu>
+              <DropdownMenuTrigger className="inline-flex items-center justify-center h-7 gap-1 px-2 text-xs text-slate-400 hover:text-white rounded-md hover:bg-slate-800">
+                  {activeChannelFilter?.label ?? "All"}
+                  <ChevronDown className="h-3 w-3" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="border-slate-700 bg-slate-800"
+              >
+                {CHANNEL_FILTER_OPTIONS.map((opt) => (
+                  <DropdownMenuItem
+                    key={opt.value}
+                    onClick={() => setChannelFilter(opt.value)}
+                    className={cn(
+                      "text-sm",
+                      channelFilter === opt.value
+                        ? "text-primary"
+                        : "text-slate-300"
+                    )}
+                  >
+                    {opt.label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </div>
 
