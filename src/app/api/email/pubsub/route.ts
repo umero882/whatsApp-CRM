@@ -61,11 +61,15 @@ export async function POST(request: Request): Promise<Response> {
 
       const contact = await findOrCreateEmailContact(sb, ownerUserId, customerAddress(parsed), parsed.fromName);
       const conv = await findOrCreateEmailConversation(sb, ownerUserId, contact.id, parsed.subject);
-      await insertInboundEmailMessage(sb, {
+      const inserted = await insertInboundEmailMessage(sb, {
         conversationId: conv.id, text: parsed.text, messageId: parsed.messageId,
         threadId, references: parsed.references,
         headers: { from: parsed.fromEmail, to: parsed.toAddresses, subject: parsed.subject },
       });
+      // A concurrent push already ingested this exact Message-ID (and dispatched
+      // the agent). Skip — do NOT re-run the agent (double reply) or count it as
+      // errored (which would hold the cursor).
+      if (inserted.duplicate) { skipped++; continue; }
       await client.addLabel(id, INGESTED_LABEL);
       created++;
       // Fire-and-forget agent, exactly like the WhatsApp webhook.

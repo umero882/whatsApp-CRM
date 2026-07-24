@@ -50,7 +50,7 @@ export async function findOrCreateEmailConversation(
 export async function insertInboundEmailMessage(sb: SupabaseClient, args: {
   conversationId: string; text: string; messageId: string; threadId: string;
   references: string | null; headers: Record<string, unknown>;
-}): Promise<{ id: string }> {
+}): Promise<{ id: string; duplicate: boolean }> {
   const { data, error } = await sb.from('messages').insert({
     conversation_id: args.conversationId,
     sender_type: 'customer',
@@ -62,11 +62,19 @@ export async function insertInboundEmailMessage(sb: SupabaseClient, args: {
     email_headers: args.headers,
     status: 'delivered',
   }).select('id').single();
-  if (error) throw new Error(`insert inbound email message failed: ${error.message}`);
+  if (error) {
+    // Two overlapping Gmail pushes can both pass the alreadyIngested() check and
+    // race to insert the same Message-ID; the loser hits uq_messages_email_message_id.
+    // That means another push already ingested this message (and fired the agent),
+    // so this is a benign no-op — report it as a duplicate so the caller skips it
+    // rather than counting it as a hard error (which would wedge the history cursor).
+    if (error.code === UNIQUE_VIOLATION) return { id: '', duplicate: true };
+    throw new Error(`insert inbound email message failed: ${error.message}`);
+  }
   await sb.from('conversations').update({
     last_message_text: args.text.slice(0, 500) || '[email]',
     last_message_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }).eq('id', args.conversationId);
-  return { id: data.id };
+  return { id: data.id, duplicate: false };
 }

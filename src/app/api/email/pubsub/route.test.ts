@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 // `mock`-prefixed vars) — plain top-level consts hit a TDZ ReferenceError at
 // runtime because vi.mock calls are hoisted above them. Hoisting these here
 // keeps every mock's behavior/assertions identical to the spec.
-const { getRaw, runAgent, state, createdConv } = vi.hoisted(() => ({
+const { getRaw, runAgent, state, createdConv, msg } = vi.hoisted(() => ({
   getRaw: vi.fn(async () => ({
     raw: Buffer.from(
       'From: Jane <jane@example.com>\r\nTo: support@ethiopianmaids.com\r\nSubject: register\r\nMessage-ID: <m1@x>\r\n\r\nhow do I sign up?',
@@ -16,6 +16,7 @@ const { getRaw, runAgent, state, createdConv } = vi.hoisted(() => ({
   runAgent: vi.fn(async () => ({ kind: 'replied' })),
   state: { last_history_id: '10' },
   createdConv: { id: 'conv-1' },
+  msg: { insertResult: { data: { id: 'msg-1' }, error: null } as { data: unknown; error: { code?: string; message: string } | null } },
 }));
 
 vi.mock('@/lib/email/oidc', () => ({ verifyPubSubPush: async () => true }));
@@ -29,7 +30,7 @@ vi.mock('@/lib/flows/admin-client', () => ({
   supabaseAdmin: () => ({
     from: (t: string) => {
       if (t === 'email_sync_state') return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: state }) }) }), update: () => ({ eq: async () => ({}) }) } as any;
-      if (t === 'messages') return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null }) }) }), insert: () => ({ select: () => ({ single: async () => ({ data: { id: 'msg-1' } }) }) }) } as any;
+      if (t === 'messages') return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null }) }) }), insert: () => ({ select: () => ({ single: async () => msg.insertResult }) }) } as any;
       if (t === 'contacts') return { select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null }) }) }) }), insert: () => ({ select: () => ({ single: async () => ({ data: { id: 'c-1' } }) }) }) } as any;
       if (t === 'conversations') return { select: () => ({ eq: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null }) }) }) }) }), insert: () => ({ select: () => ({ single: async () => ({ data: createdConv }) }) }), update: () => ({ eq: async () => ({}) }) } as any;
       // ai_provider_config / ai_agent_config (and anything else): no row configured.
@@ -64,4 +65,21 @@ it('treats a Gmail 404 (message gone) as skip, not errored — so the cursor can
   expect(json.errored).toBe(0); // permanent 404 must NOT hold the cursor
   expect(json.skipped).toBe(1);
   expect(json.created).toBe(0);
+});
+
+it('treats a duplicate Message-ID (concurrent-push race, 23505) as skip — no re-run, no errored', async () => {
+  runAgent.mockClear();
+  msg.insertResult = { data: null, error: { code: '23505', message: 'duplicate key' } };
+  const req = new Request('http://x/api/email/pubsub', {
+    method: 'POST',
+    body: JSON.stringify({ message: { data: Buffer.from(JSON.stringify({ historyId: '22' })).toString('base64') } }),
+  });
+  const res = await POST(req);
+  const json = await res.json();
+  msg.insertResult = { data: { id: 'msg-1' }, error: null }; // restore
+  expect(res.status).toBe(200);
+  expect(json.errored).toBe(0);   // race loser must NOT hold the cursor
+  expect(json.skipped).toBe(1);
+  expect(json.created).toBe(0);
+  expect(runAgent).not.toHaveBeenCalled(); // must NOT double-dispatch the agent
 });
