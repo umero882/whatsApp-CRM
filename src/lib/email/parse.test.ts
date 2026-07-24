@@ -30,6 +30,21 @@ describe('parseEmail', () => {
     expect(p.autoSubmitted).toBe(true);
   });
 
+  it('flags marketing / list mail via List-Unsubscribe as automated (so it is dropped)', async () => {
+    const raw = RAW.replace(
+      'Subject:',
+      'List-Unsubscribe: <https://example.com/unsub>\r\nSubject:',
+    );
+    const p = await parseEmail(toB64Url(raw));
+    expect(p.autoSubmitted).toBe(true);
+  });
+
+  it('flags mailing-list mail via List-Id as automated', async () => {
+    const raw = RAW.replace('Subject:', 'List-Id: Promo <promo.example.com>\r\nSubject:');
+    const p = await parseEmail(toB64Url(raw));
+    expect(p.autoSubmitted).toBe(true);
+  });
+
   // Regression: mailparser parses Delivered-To as an ADDRESS header (object,
   // or an array of objects when it repeats — normal on Gmail/forwarded mail),
   // never a plain string. The old `as string`.toLowerCase() crashed the whole

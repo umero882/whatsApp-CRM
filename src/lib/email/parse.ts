@@ -51,9 +51,17 @@ export async function parseEmail(rawBase64Url: string): Promise<ParsedEmail> {
 
   const autoSubmittedHeader = String(mail.headers.get('auto-submitted') ?? '').toLowerCase();
   const precedence = String(mail.headers.get('precedence') ?? '').toLowerCase();
+  // Bulk-mail signal: any List-* header (List-Unsubscribe / List-Id / …) marks
+  // newsletters, marketing blasts and mailing-list traffic (CAN-SPAM / RFC 8058)
+  // — never a genuine 1:1 email from a customer. mailparser collapses all of
+  // them under a single `list` header key, present only when at least one was
+  // set. Treat that as automated so shouldDropEmail() filters them before they
+  // reach the (imperfect) LLM relevance gate — otherwise marketing like
+  // "Final notice: plan expires tomorrow" gets auto-answered by the agent.
+  const isBulkList = mail.headers.has('list');
   const autoSubmitted =
     (autoSubmittedHeader !== '' && autoSubmittedHeader !== 'no') ||
-    precedence === 'bulk' || precedence === 'list';
+    precedence === 'bulk' || precedence === 'list' || isBulkList;
 
   const html = typeof mail.html === 'string' ? mail.html.replace(/<[^>]+>/g, ' ') : '';
 

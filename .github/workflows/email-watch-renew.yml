@@ -1,0 +1,40 @@
+# Daily renewal of the Gmail push `users.watch` subscription (expires ~7 days).
+#
+# Kept SEPARATE from cron-ping.yml (which fires every 5 min) on purpose:
+# /api/email/watch/cron re-reads Gmail's current historyId and OVERWRITES
+# email_sync_state.last_history_id. Running it frequently would risk advancing
+# the cursor past mail that arrived but hasn't been processed yet. Once a day at
+# an off-peak time keeps the watch fresh while making that window negligible.
+#
+# Reuses the same AUTOMATION_CRON_SECRET repo secret as cron-ping.yml (must match
+# the Coolify env var on the wacrm app).
+name: email-watch-renew
+
+on:
+  schedule:
+    # 03:17 UTC daily — off-peak, and off the top of the hour to dodge the
+    # scheduler's thundering herd (GitHub cron drift of 5-15 min is fine here).
+    - cron: '17 3 * * *'
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: email-watch-renew
+  cancel-in-progress: false
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Renew Gmail watch
+        env:
+          CRON_SECRET: ${{ secrets.AUTOMATION_CRON_SECRET }}
+        run: |
+          code=$(curl -sS -m 60 -o /tmp/body -w '%{http_code}' \
+            -H "x-cron-secret: ${CRON_SECRET}" \
+            "https://crm.sheger.cloud/api/email/watch/cron" || echo 000)
+          echo "watch/cron -> ${code} $(cat /tmp/body | head -c 300)"
+          # Fail the run on non-2xx so a lapsed watch surfaces in the Actions tab.
+          case "${code}" in 2*) exit 0 ;; *) exit 1 ;; esac
