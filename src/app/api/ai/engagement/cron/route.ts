@@ -27,6 +27,7 @@ import {
   REENGAGE_MAX_SILENCE_MS,
   REENGAGE_MIN_SILENCE_MS,
 } from '@/lib/ai/reengage';
+import { sendAppDownloadCard } from '@/lib/ai/tools/ethiopian-maids';
 
 /**
  * Engagement cron — the proactive half of the AI agent. Hit by the
@@ -340,6 +341,27 @@ interface DormantConvRow {
     | null;
 }
 
+/**
+ * Has this conversation ever received the app download card? Matches
+ * both the current summary row ("[Official app download card]") and the
+ * older long-form rows, so pre-existing threads are not re-carded.
+ */
+async function conversationHasAppCard(admin: Admin, conversationId: string): Promise<boolean> {
+  const { data, error } = await admin
+    .from('messages')
+    .select('id')
+    .eq('conversation_id', conversationId)
+    .ilike('content_text', '%app download card%')
+    .limit(1);
+  // On a query error, assume it WAS sent — a missing card is a lesser
+  // failure than spamming a customer who already has one.
+  if (error) {
+    console.warn('[ai-engagement-cron] card lookup failed for', conversationId, error.message);
+    return true;
+  }
+  return (data ?? []).length > 0;
+}
+
 async function sweepDormantConversations(admin: Admin) {
   const now = Date.now();
   // Pre-filter on last_message_at: when the agent replied instantly (the
@@ -393,7 +415,35 @@ async function sweepDormantConversations(admin: Admin) {
       if (!verdict.eligible) continue;
 
       const lang = CARD_LANG[detectLanguage(lastCustomer?.content_text ?? '')];
-      const nudge = buildReengageNudge(lang, contact.name ?? null, cfg.businessName);
+
+      // Dead-end recovery: the commonest way a conversation goes dormant
+      // is that we asked "registered or new?" and the customer never
+      // answered — so they left without ever seeing the app card. A bare
+      // "just checking in" does nothing for them. Send the card WITH the
+      // nudge so the dormant thread carries the actual next step.
+      let cardSentWithNudge = false;
+      if (!(await conversationHasAppCard(admin, conv.id))) {
+        try {
+          const res = (await sendAppDownloadCard.handler({ language: lang }, {
+            supabase: admin,
+            userId: conv.user_id,
+            conversationId: conv.id,
+            channel: 'whatsapp',
+            contactPhone: contact.phone,
+            contactName: contact.name ?? null,
+            escalationPhone: null,
+            hasuraUrl: null,
+            hasuraAdminSecret: null,
+            whatsapp: { phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken },
+          })) as { ok?: boolean };
+          cardSentWithNudge = res?.ok === true;
+        } catch (e) {
+          console.warn('[ai-engagement-cron] nudge card failed for', conv.id,
+            e instanceof Error ? e.message : e);
+        }
+      }
+
+      const nudge = buildReengageNudge(lang, contact.name ?? null, cfg.businessName, cardSentWithNudge);
       const r = await sendTextMessage({
         phoneNumberId: cfg.phoneNumberId,
         accessToken: cfg.accessToken,

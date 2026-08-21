@@ -94,17 +94,34 @@ export function buildReengageNudge(
   language: AlertLanguage,
   contactName: string | null,
   businessName: string | null,
+  /**
+   * True when this conversation went dormant WITHOUT the customer ever
+   * receiving the app download card (typically: we asked "registered or
+   * new?" and they never answered). The caller sends the card right
+   * before this text, so the nudge points at it instead of asking the
+   * customer to pick up a thread they already abandoned.
+   */
+  cardSentWithNudge = false,
 ): string {
   const name = contactName?.trim();
   const biz = businessName?.trim() || 'Ethiopian Maids';
   if (language === 'ar') {
     const greet = name ? `مرحباً ${name}! 👋` : 'مرحباً! 👋';
+    if (cardSentWithNudge) {
+      return `${greet} أنا من ${biz} — هذا هو تطبيقنا الرسمي، اضغط الزر بالأعلى للتسجيل وتصفح الفرص. أي سؤال، فقط رد هنا 🌸`;
+    }
     return `${greet} أنا من ${biz} — ما زلت هنا إذا أحببت نكمل من حيث توقفنا. أي سؤال، فقط رد هنا 🌸`;
   }
   if (language === 'am') {
     const greet = name ? `ሰላም ${name}! 👋` : 'ሰላም! 👋';
+    if (cardSentWithNudge) {
+      return `${greet} ከ${biz} ነኝ — ይህ ኦፊሴላዊ መተግበሪያችን ነው፤ ለመመዝገብ ከላይ ያለውን ቁልፍ ይጫኑ። ማንኛውም ጥያቄ ካለዎት እዚህ ይመልሱ 🌸`;
+    }
     return `${greet} ከ${biz} ነኝ — ካቆምንበት መቀጠል ከፈለጉ አሁንም እዚህ ነኝ። ማንኛውም ጥያቄ ካለዎት እዚህ ይመልሱ 🌸`;
   }
   const greet = name ? `Hi ${name}! 👋` : 'Hi! 👋';
+  if (cardSentWithNudge) {
+    return `${greet} From ${biz} — that's our official app above. Tap the button to register and browse, and if you'd rather ask me something first, just reply here 🌸`;
+  }
   return `${greet} Just checking in from ${biz} — I'm still here if you'd like to pick up where we left off. Any questions, just reply here 🌸`;
 }

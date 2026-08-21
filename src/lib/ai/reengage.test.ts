@@ -89,3 +89,35 @@ describe('buildReengageNudge', () => {
     expect(msg).toContain('Ethiopian Maids');
   });
 });
+
+// Regression 2026-08-22: dormant conversations were overwhelmingly ones
+// that dead-ended on the "registered or new?" triage — the customer
+// left without ever seeing the app card. A bare "just checking in"
+// gave them nothing to act on, so the cron now sends the card WITH the
+// nudge and the copy points at it.
+describe('buildReengageNudge — card-aware variant', () => {
+  it('defaults to the plain nudge when no card rides along', () => {
+    const t = buildReengageNudge('en', 'Selam', 'Ethiopian Maids');
+    expect(t).toContain('Just checking in');
+    expect(t).not.toMatch(/tap the button/i);
+  });
+
+  it('points at the card when one was sent with it', () => {
+    const t = buildReengageNudge('en', 'Selam', 'Ethiopian Maids', true);
+    expect(t).toMatch(/tap the button/i);
+    expect(t).toContain('Selam');
+    expect(t).toContain('Ethiopian Maids');
+    expect(t).not.toContain('Just checking in');
+  });
+
+  it('localises the card variant for Arabic and Amharic', () => {
+    expect(buildReengageNudge('ar', null, 'Ethiopian Maids', true)).toContain('اضغط الزر بالأعلى');
+    expect(buildReengageNudge('am', null, 'Ethiopian Maids', true)).toContain('ከላይ ያለውን ቁልፍ');
+  });
+
+  it('never pastes a store URL (customers distrust raw links)', () => {
+    for (const lang of ['en', 'ar', 'am'] as const) {
+      expect(buildReengageNudge(lang, null, null, true)).not.toMatch(/https?:\/\//);
+    }
+  });
+});

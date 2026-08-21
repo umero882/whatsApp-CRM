@@ -150,7 +150,7 @@ export function resolveChannelDestination(
   return channel === 'email' ? (contact.external_id ?? '') : (contact.phone ?? '');
 }
 
-interface HistoryRow {
+export interface HistoryRow {
   sender_type: 'customer' | 'agent';
   content_type: string;
   content_text: string | null;
@@ -332,8 +332,50 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     }
   }
 
-  // ─── Loop ───────────────────────────────────────────────────────────
   const toolsUsed: string[] = [];
+
+  // ─── Deterministic app card ─────────────────────────────────────────
+  // Policy, not a judgement call: a customer who has already said what
+  // they want gets the card NOW, on this turn. Sending it here (rather
+  // than leaving it to the model) is what makes it survive the triage
+  // question — reply_with_choices ends the turn, so a card the model
+  // "would have sent next" never arrives. See shouldForceAppCard.
+  let preSentCard = false;
+  if (shouldForceAppCard(history, intent, last.content_text ?? '')) {
+    const cardTool = findTool(stageTools, 'send_app_download_card');
+    if (cardTool) {
+      try {
+        const r = (await cardTool.handler(
+          { language: CARD_LANG[language] }, toolCtx,
+        )) as { ok?: boolean };
+        if (r?.ok) {
+          preSentCard = true;
+          toolsUsed.push('send_app_download_card');
+          console.log('[ai-agent] app card sent server-side (stage=%s intent=%s)', stage, intent);
+        } else {
+          console.warn('[ai-agent] forced card not delivered:', safeJsonString(r).slice(0, 160));
+        }
+      } catch (e) {
+        console.warn('[ai-agent] forced card send failed:', e instanceof Error ? e.message : e);
+      }
+    }
+  }
+  if (preSentCard) {
+    // The card is already on screen. Everything left is ONE sentence
+    // beside it — no re-send, no follow-up question that would compete
+    // with the card for the customer's next action.
+    messages.push({
+      role: 'user',
+      content:
+        '[SYSTEM] The official app download card has ALREADY been delivered to this customer '
+        + 'in this turn. Do NOT call send_app_download_card and do NOT call reply_with_choices. '
+        + 'Reply in plain text with ONE short warm sentence that names the business and points at '
+        + 'the card (e.g. "Welcome to Ethiopian Maids 🌸 Tap the button above to get our official '
+        + 'app — you can register and browse there."). Do NOT paste any link and do NOT ask a question.',
+    });
+  }
+
+  // ─── Loop ───────────────────────────────────────────────────────────
   // Set once a SELF_DELIVERING tool has successfully put this turn's
   // customer-facing message in the chat. From that point on, NOTHING
   // else may be sent — no holding lines, no extra model text.
@@ -355,8 +397,15 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
           // line on top would read as a confusing second message.
           return { kind: 'replied', text: '[interactive choices]', stage, turns: turn + 1, toolsUsed };
         }
+        // The card is already on screen: point at it instead of the
+        // generic holding line, which would read as a non-sequitur.
         await postAndPersist(sb, waCfg, accessToken, contact, conv.id,
-          stageHoldingReply(stage, language), channel, destination);
+          preSentCard ? cardPointerLine(language) : stageHoldingReply(stage, language),
+          channel, destination);
+        if (preSentCard) {
+          return { kind: 'replied', text: cardPointerLine(language), stage, turns: turn + 1, toolsUsed };
+        }
+        await logAgentFailure(sb, conv, stage, intent, `provider: ${e.message}`);
         return { kind: 'failed', reason: `provider: ${e.message}` };
       }
       throw e;
@@ -447,6 +496,13 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
           resultJson = {
             error: `Tool "${call.name}" is not available in stage ${stage}. Reply in plain text instead.`,
           };
+        } else if (preSentCard && call.name === 'send_app_download_card') {
+          // Already delivered above — a second card in the same turn is
+          // a duplicate message to the customer, not a retry.
+          resultJson = {
+            ok: true,
+            note: 'The card was already sent this turn. Reply with ONE short sentence pointing at it.',
+          };
         } else {
           resultJson = await tool.handler(call.arguments, toolCtx);
         }
@@ -487,7 +543,12 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     return { kind: 'replied', text: '[interactive choices]', stage, turns: agent.max_turns, toolsUsed };
   }
   await postAndPersist(sb, waCfg, accessToken, contact, conv.id,
-    stageHoldingReply(stage, language), channel, destination);
+    preSentCard ? cardPointerLine(language) : stageHoldingReply(stage, language),
+    channel, destination);
+  if (preSentCard) {
+    return { kind: 'replied', text: cardPointerLine(language), stage, turns: agent.max_turns, toolsUsed };
+  }
+  await logAgentFailure(sb, conv, stage, intent, 'max_turns_exceeded');
   return { kind: 'failed', reason: 'max_turns_exceeded' };
 }
 
@@ -507,7 +568,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
  * server "sticks" with the intent for the rest of the conversation —
  * later turns that don't mention either side don't reset it.
  */
-type Intent = 'sponsor' | 'job_seeker' | 'unknown';
+export type Intent = 'sponsor' | 'job_seeker' | 'unknown';
 
 const SPONSOR_PATTERNS = [
   /\b(i\s*(need|want|am\s*looking\s*for|require)\s*(a\s*)?(maid|nanny|housekeeper|domestic|helper|cook|elderly\s*care|cleaner|driver|nurse|caregiver|sirvienta|sirvient|خادم|مربية))\b/i,
@@ -710,6 +771,76 @@ function cardPointerLine(lang: Lang): string {
   return 'Tap the button above to get our official app 🌸';
 }
 
+// ════════════════════════════════════════════════════════════════════
+// Deterministic app-card trigger
+//
+// Production incident 2026-08-22: across 58 conversations the card was
+// sent on the FIRST agent reply exactly ZERO times. Three causes
+// compounded — GREETING guidance led with "do NOT assume / do NOT ask",
+// OPERATING_DIRECTIVE pushes reply_with_choices far harder than the
+// card, and reply_with_choices is self-delivering (it ENDS the turn),
+// so once the model asked "registered or new?" the card could not ride
+// along. ~30% of customers never answered the triage → no card, ever.
+//
+// The fix is to stop asking the model. When the customer has ALREADY
+// told us what they want, the card is not a judgement call — it's
+// policy (see OPERATING_DIRECTIVE "REGISTRATION POLICY"). Send it
+// server-side and let the model write only the sentence beside it.
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * The customer has just identified themselves as NOT-yet-registered —
+ * typically by tapping the "I'm new" triage option, but the free-text
+ * equivalents are matched too. This is the second place the card used
+ * to go missing: the triage answer arrives with no hire/work keyword,
+ * so detectIntent stays 'unknown' and the model asks yet another
+ * question instead of sending the card.
+ */
+// NOTE: \b is ASCII-only in JS (\w === [A-Za-z0-9_]), so it never
+// matches beside Arabic or Amharic letters. The non-Latin alternatives
+// therefore sit OUTSIDE the \b-terminated group — with them inside, the
+// Arabic and Amharic branches silently never fire.
+const NEW_CUSTOMER_RE =
+  /^(?:(?:i['’]?m\s+new|new\s+here|i\s+am\s+new|not\s+registered|no,?\s*(?:i['’]?m\s+)?new|first\s+time)\b|جديد|لست\s+مسجل|አዲስ)/i;
+
+/**
+ * Free-text asks that mean "point me at the app" but carry no hire/work
+ * keyword, so detectIntent alone would miss them.
+ */
+const APP_FUNNEL_RE =
+  /\b(?:register|registration|sign\s*up|signup|create\s+(?:an\s+)?account|join|download|app\s+link|your\s+app|the\s+app)\b|تسجيل|سجل|التطبيق|ተመዝገብ|መተግበሪያ/i;
+
+/** Has the card already been delivered in this conversation? */
+function cardAlreadySent(history: HistoryRow[]): boolean {
+  return history.some(
+    (m) => m.sender_type === 'agent' && /app download card/i.test(m.content_text ?? ''),
+  );
+}
+
+/**
+ * Should the server send the app card itself this turn, rather than
+ * hoping the model calls the tool? True when the card has not been sent
+ * yet AND either:
+ *   a) this is FIRST CONTACT and the opener already states what they
+ *      want (hire / find work / register) — nothing left to triage; or
+ *   b) the customer just told us they are new / not registered.
+ *
+ * Deliberately NOT triggered for an ambiguous opener ("can I get more
+ * info?"): those still get the triage question, which is correct.
+ * Pure — exported for tests.
+ */
+export function shouldForceAppCard(
+  history: HistoryRow[],
+  intent: Intent,
+  lastCustomerText: string,
+): boolean {
+  if (cardAlreadySent(history)) return false;
+  const text = lastCustomerText.trim();
+  if (NEW_CUSTOMER_RE.test(text)) return true;
+  const firstContact = !history.some((m) => m.sender_type === 'agent');
+  return firstContact && (intent !== 'unknown' || APP_FUNNEL_RE.test(text));
+}
+
 /**
  * Detect a final reply that WRITES fixed answer options as a trailing
  * text list ("What duties?\n▸ Childcare\n▸ Cooking") instead of calling
@@ -850,11 +981,13 @@ ${toolsLine}
 ═══════════════════════`;
 }
 
-const STAGE_GUIDANCE: Record<Stage, string> = {
+export const STAGE_GUIDANCE: Record<Stage, string> = {
   GREETING:
-    'This is a fresh conversation. Send a warm welcome that names the business. Do NOT assume the customer wants to hire OR is looking for work — you do not know yet. Do NOT ask questions yet. One friendly sentence is plenty. ONE exception: if their message ALREADY asks to register, download the app, hire, or find work, call the send_app_download_card TOOL (a real tool call — never type its name in your text) and reply with one sentence pointing at the card.',
+    'This is a fresh conversation. FIRST decide which of these two cases you are in.\n'
+    + 'CASE A — their message ALREADY says what they want (to hire, to find work, to register, to download the app): call the send_app_download_card TOOL immediately (a REAL tool call — never type its name in your text), then reply with ONE warm sentence that names the business and points at the card. Do NOT ask "are you registered?" first — they already told you what they need, and asking costs us the customer. Do NOT call reply_with_choices in this case.\n'
+    + 'CASE B — their message is just a greeting or a vague "can I get more info?": send a warm welcome that names the business. Do NOT assume they want to hire OR to work — you do not know yet. One friendly sentence is plenty.',
   DISCOVERY:
-    'You have greeted the customer. FIRST triage — unless the history already answers it, call reply_with_choices with the question "Are you already registered with us, or new here?" and options like ["Existing customer","I\'m new"] (translate to the conversation language). NEW customers who want to register, hire, or find work → call send_app_download_card, then ONE short sentence pointing at the card; do NOT start registration or data collection in chat. EXISTING customers or anyone with a service issue → find out what they need, per the INTENT GUIDANCE above. No other tools.',
+    'You have greeted the customer. Anyone who is NEW, or who wants to register / hire / find work, gets send_app_download_card FIRST — that is the single most useful thing you can do for them, and registration never happens in chat. Only when you genuinely cannot tell whether they are new should you triage: call reply_with_choices with "Are you already registered with us, or new here?" and options like ["Existing customer","I\'m new"] (translate to the conversation language). Never triage twice — if the history already answers it, act on the answer. EXISTING customers or anyone with a service issue → find out what they need, per the INTENT GUIDANCE above. No other tools.',
   QUALIFICATION:
     'You know the customer intent (see INTENT GUIDANCE above). If they are NEW and want to register/hire/find work, call send_app_download_card instead of qualifying in chat. For existing customers, gather the relevant basics with ONE question per turn, skipping what you already know from history. Fixed-answer questions (live-in/live-out, duties, emirate) go through reply_with_choices; open-ended ones (start date, languages) stay plain text. No other tools until you have enough info per the intent guidance.',
   RECOMMENDATION:
@@ -950,7 +1083,7 @@ const OPERATING_DIRECTIVE = `═══ OPERATING RULES ═══
 • ONE WhatsApp message per turn. No multi-part bursts.
 • Use the customer's name once you know it. Never "Dear Sir/Madam".
 • ONE question per turn at most. Don't interrogate.
-• CHOICES ARE TAPPED, NOT TYPED: whenever your question has 2–10 fixed answers (yes/no, registered/new, live-in/live-out, picking a candidate or time), call reply_with_choices (available in every stage) — the customer taps an option instead of typing. The tool message IS your reply: after it succeeds, output an EMPTY final message and never repeat the options as text. NEVER write answer options inside your text — not as bullets, dashes, numbered lines, NOR as a prose sentence like "Options include A, B, or C" — every enumeration of answers is ALWAYS a reply_with_choices call. Open-ended questions (name, city, dates, budgets) stay plain text.
+• CHOICES ARE TAPPED, NOT TYPED: whenever your question has 2–10 fixed answers (yes/no, registered/new, live-in/live-out, picking a candidate or time), call reply_with_choices (available in every stage) — the customer taps an option instead of typing. The tool message IS your reply: after it succeeds, output an EMPTY final message and never repeat the options as text. NEVER write answer options inside your text — not as bullets, dashes, numbered lines, NOR as a prose sentence like "Options include A, B, or C" — every enumeration of answers is ALWAYS a reply_with_choices call. Open-ended questions (name, city, dates, budgets) stay plain text. EXCEPTION — this rule NEVER outranks the app card: if the customer has already said they want to hire, find work, or register, call send_app_download_card instead of asking them anything. reply_with_choices ENDS your turn, so a question asked now means the card cannot be sent until they reply again — and most never do.
 • NEVER invent candidates, prices, availability, or policies. Use the tools when they're enabled.
 • KNOWLEDGE: questions about how our service works — visa process, timelines, what fees include, refunds/replacements, medical checks, trial periods, required documents — go through search_knowledge_base FIRST (available in every stage). Answer ONLY from the returned passages; when nothing is found, say you'll confirm with our team. NEVER answer policy from memory.
 • NEVER share a maid's full name, passport number, exact location, or phone before a confirmed booking.
@@ -1023,6 +1156,37 @@ function safeJsonString(value: unknown): string {
     return JSON.stringify(value);
   } catch {
     return JSON.stringify({ error: 'unserializable tool result' });
+  }
+}
+
+/**
+ * Record a run that produced no model reply, so the canned holding
+ * lines stop being invisible. Before this, ~9% of production replies
+ * were holding lines with nothing anywhere explaining why.
+ *
+ * Fail-soft by design: this is observability, never a reason to break
+ * a customer reply. Tolerates the table not existing yet (the insert
+ * just errors and we log it), so it is safe to deploy before the
+ * migration is applied.
+ */
+async function logAgentFailure(
+  sb: SupabaseClient,
+  conv: { id: string; user_id: string },
+  stage: Stage,
+  intent: Intent,
+  reason: string,
+): Promise<void> {
+  try {
+    const { error } = await sb.from('ai_agent_failures').insert({
+      user_id: conv.user_id,
+      conversation_id: conv.id,
+      stage,
+      intent,
+      reason,
+    });
+    if (error) console.warn('[ai-agent] failure log insert failed:', error.message);
+  } catch (e) {
+    console.warn('[ai-agent] failure log threw:', e instanceof Error ? e.message : e);
   }
 }
 

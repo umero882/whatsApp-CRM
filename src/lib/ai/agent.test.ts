@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { APP_INFO_BLOCK, extractChoicesFromText, stripCardNarration, stringifyHistoryMessage } from './agent';
+import {
+  APP_INFO_BLOCK,
+  extractChoicesFromText,
+  shouldForceAppCard,
+  STAGE_GUIDANCE,
+  stringifyHistoryMessage,
+  stripCardNarration,
+  type HistoryRow,
+} from './agent';
 
 describe('stripCardNarration', () => {
   it('leaves normal replies untouched', () => {
@@ -212,5 +220,125 @@ describe('APP_INFO_BLOCK — iOS launch copy (regression: iOS app went live 2026
 
   it('still tells the model send_app_download_card is available in every stage', () => {
     expect(flat).toMatch(/send_app_download_card \(available in every stage\)/);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// shouldForceAppCard
+//
+// Regression for the 2026-08-22 audit: across 58 conversations the app
+// card was sent on the FIRST agent reply exactly ZERO times. The model
+// always asked "registered or new?" first (reply_with_choices, which
+// ENDS the turn), and ~30% of customers never answered — so they never
+// saw the card at all. The card is now sent server-side and these tests
+// pin the trigger.
+// ════════════════════════════════════════════════════════════════════
+
+const cust = (text: string): HistoryRow => ({
+  sender_type: 'customer', content_type: 'text', content_text: text,
+  created_at: '2026-08-22T00:00:00Z',
+});
+const bot = (text: string): HistoryRow => ({
+  sender_type: 'agent', agent_kind: 'ai', content_type: 'text', content_text: text,
+  created_at: '2026-08-22T00:00:01Z',
+});
+
+describe('shouldForceAppCard', () => {
+  it('fires on first contact when the opener already states hire intent', () => {
+    const opener = 'Hello! I would like to inquire about hiring a maid.';
+    expect(shouldForceAppCard([cust(opener)], 'sponsor', opener)).toBe(true);
+  });
+
+  it('fires on first contact for a job seeker (production convo dfc13024)', () => {
+    const opener = 'Hello! I want job in Kuwait';
+    expect(shouldForceAppCard([cust(opener)], 'job_seeker', opener)).toBe(true);
+  });
+
+  it('fires on an explicit register/download ask even when intent is unknown', () => {
+    for (const t of ['I want to register', 'how do I sign up?', 'send me the app link', 'تسجيل']) {
+      expect(shouldForceAppCard([cust(t)], 'unknown', t)).toBe(true);
+    }
+  });
+
+  it('does NOT fire on a vague opener — that still gets the triage question', () => {
+    const opener = 'Hello! Can I get more info on this?';
+    expect(shouldForceAppCard([cust(opener)], 'unknown', opener)).toBe(false);
+  });
+
+  it('does NOT fire on a bare greeting', () => {
+    expect(shouldForceAppCard([cust('Hi')], 'unknown', 'Hi')).toBe(false);
+  });
+
+  it('fires when the customer answers the triage with "I\'m new"', () => {
+    const history = [
+      cust('Hello! Can I get more info on this?'),
+      bot('Are you already registered with us, or new here?'),
+      cust("I'm new here"),
+    ];
+    expect(shouldForceAppCard(history, 'unknown', "I'm new here")).toBe(true);
+  });
+
+  it('fires on the free-text equivalents of the "I\'m new" option', () => {
+    for (const t of ['new here', 'I am new', 'not registered', 'first time']) {
+      expect(shouldForceAppCard([cust('hi'), bot('registered or new?'), cust(t)], 'unknown', t)).toBe(true);
+    }
+  });
+
+  it('does NOT fire for an existing customer answering the triage', () => {
+    const history = [cust('hi'), bot('Are you already registered with us, or new here?'), cust('Existing customer')];
+    expect(shouldForceAppCard(history, 'unknown', 'Existing customer')).toBe(false);
+  });
+
+  it('never sends a second card once one is in the conversation', () => {
+    const history = [
+      cust('I want to hire a maid'),
+      bot('[Official app download card]'),
+      bot('Tap the button above 🌸'),
+      cust('I want to hire a maid'),
+    ];
+    expect(shouldForceAppCard(history, 'sponsor', 'I want to hire a maid')).toBe(false);
+  });
+
+  it('recognises the legacy long-form card row too', () => {
+    const history = [
+      cust('I want to hire a maid'),
+      bot('[Official app download card] This is the official Ethiopian Maids app on Google Play.'),
+      cust('I want to hire a maid'),
+    ];
+    expect(shouldForceAppCard(history, 'sponsor', 'I want to hire a maid')).toBe(false);
+  });
+
+  it('does NOT fire mid-conversation for an already-greeted customer with no new signal', () => {
+    const history = [cust('hi'), bot('Welcome to Ethiopian Maids 🌸'), cust('which emirate do you cover?')];
+    expect(shouldForceAppCard(history, 'unknown', 'which emirate do you cover?')).toBe(false);
+  });
+});
+
+describe('STAGE_GUIDANCE — the card leads, the triage follows (regression 2026-08-22)', () => {
+  it('GREETING tells the model to send the card before asking anything', () => {
+    const g = STAGE_GUIDANCE.GREETING;
+    expect(g).toMatch(/send_app_download_card/);
+    expect(g).toMatch(/Do NOT ask "are you registered\?" first/i);
+    // The card instruction must come BEFORE the "just welcome them" case.
+    expect(g.indexOf('send_app_download_card')).toBeLessThan(g.indexOf('CASE B'));
+  });
+
+  it('DISCOVERY leads with the card, not with the triage question', () => {
+    const g = STAGE_GUIDANCE.DISCOVERY;
+    expect(g.indexOf('send_app_download_card')).toBeLessThan(g.indexOf('reply_with_choices'));
+  });
+});
+
+describe('shouldForceAppCard — non-Latin scripts (regression: \b is ASCII-only in JS)', () => {
+  it('matches the Arabic and Amharic register/app asks', () => {
+    for (const t of ['تسجيل', 'اريد التطبيق', 'መተግበሪያ']) {
+      expect(shouldForceAppCard([cust(t)], 'unknown', t)).toBe(true);
+    }
+  });
+
+  it('matches the Arabic and Amharic "I am new" triage answers', () => {
+    for (const t of ['جديد', 'አዲስ']) {
+      expect(shouldForceAppCard([cust('hi'), bot('registered or new?'), cust(t)], 'unknown', t)).toBe(true);
+    }
   });
 });
