@@ -1,0 +1,8 @@
+# Shell scripts must keep LF line endings in the working copy.
+#
+# This repo is developed on Windows with core.autocrlf=true, which would check
+# these out as CRLF. scripts/ops/*.sh are piped straight to a Linux host
+# (`ssh <host> 'bash -s' < script`), and bash fails on the carriage returns
+# with `$'\r': command not found`. The committed blob is already LF; this
+# stops the checkout filter from breaking it.
+*.sh text eol=lf
