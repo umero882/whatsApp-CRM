@@ -103,10 +103,6 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        source: "/api/:path*",
-        headers: [{ key: "Cache-Control", value: "no-store" }],
-      },
-      {
         source: "/:path*",
         headers: [
           {
@@ -115,6 +111,16 @@ const nextConfig: NextConfig = {
               "public, max-age=0, s-maxage=300, stale-while-revalidate=86400",
           },
         ],
+      },
+      {
+        // MUST stay after the catch-all above. Next.js applies matching rules
+        // in order and the LAST rule wins for a repeated header key — so when
+        // this sat first, every /api/* response went out as
+        // `public, s-maxage=300` and was eligible for shared/edge caching.
+        // Verified 2026-08-22 against /api/health, which came back
+        // `public, s-maxage=300` instead of `no-store`.
+        source: "/api/:path*",
+        headers: [{ key: "Cache-Control", value: "no-store" }],
       },
       {
         // Security headers on every response, including /_next/static
