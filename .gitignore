@@ -47,3 +47,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .firecrawl/
+
+# supabase CLI scratch — version-check cache and local branch state.
+# supabase/migrations/ is tracked; only the CLI's own working files are not.
+supabase/.temp/
+supabase/.branches/
