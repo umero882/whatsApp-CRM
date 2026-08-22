@@ -55,6 +55,11 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    // `api/health` is excluded on purpose: this middleware calls
+    // supabase.auth.getUser() on every matched request, which is a network
+    // round-trip to the Supabase gateway on a different VPS. A liveness probe
+    // that depends on that gateway would let a database blip trigger a
+    // container restart. See src/app/api/health/route.ts.
+    '/((?!api/health|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 }
