@@ -2,6 +2,30 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
 export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl
+
+  // Skip the auth round-trip for API routes that already authenticate
+  // themselves.
+  //
+  // supabase.auth.getUser() validates the JWT against the auth server rather
+  // than decoding it locally, so for a signed-in caller it is a network
+  // request to the Supabase gateway on a different VPS. Every /api/* handler
+  // that needs a user builds its own client and calls getUser() again, so
+  // running it here too made each authenticated API call pay that round-trip
+  // twice.
+  //
+  // /api/whatsapp/* is deliberately still matched: the blanket 401 below is
+  // defence in depth for that subtree. All six non-webhook routes there do
+  // check getUser() themselves today, but keeping the guard means a newly
+  // added route cannot be exposed by forgetting it.
+  //
+  // Anonymous requests were never affected either way — with no auth cookie,
+  // getUser() short-circuits to AuthSessionMissingError without any network
+  // call (auth-js GoTrueClient._getUser).
+  if (pathname.startsWith('/api/') && !pathname.startsWith('/api/whatsapp/')) {
+    return NextResponse.next({ request })
+  }
+
   let supabaseResponse = NextResponse.next({ request })
 
   const supabase = createServerClient(
