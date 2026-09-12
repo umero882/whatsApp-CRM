@@ -2,7 +2,7 @@
  * Ethiopian Maids — phone verification by WhatsApp quick reply.
  *
  * The Ethiopian Maids app sends its users a UTILITY template with one
- * quick-reply button ("Confirm my number"). Meta delivers the tap to THIS
+ * quick-reply button ("Yes, send updates here"). Meta delivers the tap to THIS
  * webhook (the CRM owns the WABA's callback) as a `button` message whose
  * `payload` is what the app set at send time: `EMVERIFY:<uid>:<token>`.
  *

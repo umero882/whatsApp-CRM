@@ -609,7 +609,7 @@ async function processMessage(
   // basically for free (one indexed SELECT for the active run).
   // ============================================================
   // ============================================================
-  // Ethiopian Maids phone verification — "Confirm my number" tap.
+  // Ethiopian Maids phone verification — the "Yes, send updates here" tap.
   //
   // The app's quick-reply template lands here as a `button` message
   // with an EMVERIFY payload. Hand it to the app (which owns the
