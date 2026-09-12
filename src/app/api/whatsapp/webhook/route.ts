@@ -8,6 +8,12 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { runAgent } from '@/lib/ai/agent'
 import { processInboundMedia } from '@/lib/ai/media-intake'
+import { engineSendText } from '@/lib/automations/meta-send'
+import {
+  confirmPhoneVerifyTap,
+  parsePhoneVerifyPayload,
+  phoneVerifyReplyText,
+} from '@/lib/ethiopian-maids/phone-verify-tap'
 
 // Lazy-initialized to avoid build-time crash when env vars are missing
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -46,6 +52,13 @@ interface WhatsAppMessage {
     button_reply?: { id: string; title: string }
     list_reply?: { id: string; title: string; description?: string }
   }
+  /**
+   * Set when the customer taps a QUICK_REPLY button on a TEMPLATE we (or a
+   * system sharing this WABA — the Ethiopian Maids app) sent. Unlike
+   * `interactive`, Meta reports these as `type: 'button'` with the
+   * developer payload the sender attached at send time.
+   */
+  button?: { payload?: string; text?: string }
   /** Present when the customer swipe-replies to one of our messages. */
   context?: { id: string }
 }
@@ -595,25 +608,61 @@ async function processMessage(
   // no active flows take the runner's early-exit "no_match" path
   // basically for free (one indexed SELECT for the active run).
   // ============================================================
-  const flowResult = await dispatchInboundToFlows({
-    userId,
-    contactId: contactRecord.id,
-    conversationId: conversation.id,
-    message:
-      interactiveReplyId
-        ? {
-            kind: 'interactive_reply',
-            reply_id: interactiveReplyId,
-            reply_title: contentText ?? '',
-            meta_message_id: message.id,
-          }
-        : {
-            kind: 'text',
-            text: contentText ?? message.text?.body ?? '',
-            meta_message_id: message.id,
-          },
-    isFirstInboundMessage,
-  })
+  // ============================================================
+  // Ethiopian Maids phone verification — "Confirm my number" tap.
+  //
+  // The app's quick-reply template lands here as a `button` message
+  // with an EMVERIFY payload. Hand it to the app (which owns the
+  // token + account), answer in the chat, and treat the message as
+  // consumed: no Flow run, no keyword automations, no AI turn — Lucy
+  // has nothing to add to "your number is verified".
+  // ============================================================
+  const phoneVerify =
+    message.type === 'button' ? parsePhoneVerifyPayload(message.button?.payload) : null
+  if (phoneVerify) {
+    const outcome = await confirmPhoneVerifyTap({
+      payload: message.button!.payload!,
+      from: message.from,
+    })
+    console.log(
+      '[webhook] phone-verify tap for',
+      phoneVerify.uid,
+      '→',
+      outcome.verified ? 'verified' : outcome.reason
+    )
+    try {
+      await engineSendText({
+        userId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+        text: phoneVerifyReplyText(outcome),
+      })
+    } catch (err) {
+      console.error('[webhook] phone-verify reply failed:', err instanceof Error ? err.message : err)
+    }
+  }
+
+  const flowResult = phoneVerify
+    ? { consumed: true as const }
+    : await dispatchInboundToFlows({
+        userId,
+        contactId: contactRecord.id,
+        conversationId: conversation.id,
+        message:
+          interactiveReplyId
+            ? {
+                kind: 'interactive_reply',
+                reply_id: interactiveReplyId,
+                reply_title: contentText ?? '',
+                meta_message_id: message.id,
+              }
+            : {
+                kind: 'text',
+                text: contentText ?? message.text?.body ?? '',
+                meta_message_id: message.id,
+              },
+        isFirstInboundMessage,
+      })
   const flowConsumed = flowResult.consumed
 
   // Fire any automations that react to this webhook event. All dispatches
@@ -852,6 +901,15 @@ async function parseMessageContent(
         }
       }
       return { ...empty, contentText: '[Interactive reply]' }
+    }
+
+    case 'button': {
+      // Template quick-reply tap. The button label is what the customer
+      // saw, so the inbox bubble shows it; the payload is the sender's
+      // routing key and is NOT persisted — for the Ethiopian Maids phone
+      // verification it is a one-time secret.
+      const text = message.button?.text?.trim()
+      return { ...empty, contentText: text ? text : '[Button reply]' }
     }
 
     default:
