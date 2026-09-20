@@ -92,7 +92,8 @@ export async function sendOutreach(params: OutreachParams): Promise<OutreachResu
       throw new OutreachError(`template lookup failed: ${tplError.message}`, 500);
     }
     const catalog = (rows ?? []) as Array<{ language: string; status: string }>;
-    const approved = catalog.filter((t) => t.status === "approved");
+    // The synced catalog stores Meta's status capitalised ("Approved").
+    const approved = catalog.filter((t) => (t.status || "").toLowerCase() === "approved");
     if (!approved.length) {
       throw new OutreachError(
         catalog.length

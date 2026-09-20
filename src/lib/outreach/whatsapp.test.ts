@@ -91,9 +91,10 @@ beforeEach(() => {
   h.state.messages.length = 0;
   h.state.inserted.length = 0;
   h.state.templates.length = 0;
-  h.state.templates.push({ user_id: "owner-1", name: "ad_reply", language: "en_US", status: "approved" });
-  h.state.templates.push({ user_id: "owner-1", name: "ad_reply", language: "ar", status: "approved" });
-  h.state.templates.push({ user_id: "owner-1", name: "ad_reply_v2", language: "en_US", status: "pending" });
+  // Statuses as the sync route stores them: capitalised.
+  h.state.templates.push({ user_id: "owner-1", name: "ad_reply", language: "en_US", status: "Approved" });
+  h.state.templates.push({ user_id: "owner-1", name: "ad_reply", language: "ar", status: "Approved" });
+  h.state.templates.push({ user_id: "owner-1", name: "ad_reply_v2", language: "en_US", status: "Pending" });
   h.state.send.mockReset();
   h.state.send.mockResolvedValue({ crmMessageId: "m-1", waMessageId: "wa-1" });
 });
