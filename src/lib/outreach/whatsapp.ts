@@ -18,6 +18,15 @@
  *     business-initiated conversation) or text (only inside a 24-hour
  *     customer-service window, which a prospect never has).
  *
+ * What the agent needs to answer the reply well (added after the first live
+ * test, where a "Yes, send profiles" tap got the Amharic maid-registration
+ * reply): the template's rendered body is persisted as the message text, so
+ * the history shows what we said rather than "[template]"; and the caller
+ * states who the person is (`intent`) — stored as a role tag on the contact
+ * ("Sponsor" / "Job seeker"), which the agent reads as its starting intent
+ * when the customer's own words carry no hire/work keyword. Extra `tags`
+ * ("Prospect") are for the inbox's own filtering.
+ *
  * Auth is the route's job; this module takes the resolved owner user id.
  */
 
@@ -49,7 +58,19 @@ export interface OutreachParams {
   text?: string | null;
   /** Let a second message reach a phone that already has a conversation. */
   allowExisting?: boolean;
+  /** Who this is — a household hiring, or a worker looking for a job. */
+  intent?: OutreachIntent | null;
+  /** Labels for the inbox, created when new; matched to existing ones by name, case-insensitively. */
+  tags?: string[];
 }
+
+export type OutreachIntent = "sponsor" | "job_seeker";
+
+/** The contact tag each intent becomes — the same names the agent reads back. */
+export const ROLE_TAGS: Record<OutreachIntent, string> = {
+  sponsor: "Sponsor",
+  job_seeker: "Job seeker",
+};
 
 export interface OutreachResult {
   contactId: string;
@@ -58,6 +79,16 @@ export interface OutreachResult {
   waMessageId: string;
   contactCreated: boolean;
   conversationCreated: boolean;
+  /** The tags now on the contact, as stored (the role tag first). */
+  tags: string[];
+}
+
+/** Meta's {{n}} placeholders filled from the parameters; a missing one stays visible. */
+export function renderTemplateBody(body: string, params: string[]): string {
+  return body.replace(/\{\{(\d+)\}\}/g, (_, raw) => {
+    const value = params[Number(raw) - 1];
+    return value && value.trim().length > 0 ? value : `{{${raw}}}`;
+  });
 }
 
 interface ContactRow {
@@ -68,7 +99,7 @@ interface ContactRow {
 }
 
 export async function sendOutreach(params: OutreachParams): Promise<OutreachResult> {
-  const { userId, name, email, templateName, templateLanguage, templateParams, text, allowExisting } = params;
+  const { userId, name, email, templateName, templateLanguage, templateParams, text, allowExisting, intent } = params;
   const phone = sanitizePhoneForMeta(params.phone || "");
   if (!phone || !isValidE164("+" + phone)) {
     throw new OutreachError("phone must be a valid international number", 400);
@@ -76,22 +107,26 @@ export async function sendOutreach(params: OutreachParams): Promise<OutreachResu
   if (!templateName && !(text && text.trim())) {
     throw new OutreachError("template_name or text is required", 400);
   }
+  if (intent && !(intent in ROLE_TAGS)) {
+    throw new OutreachError(`intent must be one of ${Object.keys(ROLE_TAGS).join(", ")}`, 400);
+  }
   const db = supabaseAdmin();
 
   // A template must exist and be approved in the synced catalog; its
   // language is taken from there when the caller did not say — a name sent
   // with the wrong code is a Meta error nobody can read on the other side.
   let language = templateLanguage || null;
+  let body: string | null = null;
   if (templateName) {
     const { data: rows, error: tplError } = await db
       .from("message_templates")
-      .select("language, status")
+      .select("language, status, body_text")
       .eq("user_id", userId)
       .eq("name", templateName);
     if (tplError) {
       throw new OutreachError(`template lookup failed: ${tplError.message}`, 500);
     }
-    const catalog = (rows ?? []) as Array<{ language: string; status: string }>;
+    const catalog = (rows ?? []) as Array<{ language: string; status: string; body_text?: string | null }>;
     // The synced catalog stores Meta's status capitalised ("Approved").
     const approved = catalog.filter((t) => (t.status || "").toLowerCase() === "approved");
     if (!approved.length) {
@@ -107,6 +142,11 @@ export async function sendOutreach(params: OutreachParams): Promise<OutreachResu
     } else if (!approved.some((t) => t.language === language)) {
       throw new OutreachError(`template "${templateName}" has no approved ${language} version`, 422);
     }
+    // The text the inbox shows and the agent reads back — the same rendering
+    // the inbox's own template send persists. An older catalog row without
+    // a body stores nothing rather than a guess.
+    const chosen = approved.find((t) => t.language === language);
+    body = chosen?.body_text ? renderTemplateBody(chosen.body_text, templateParams || []) : null;
   }
 
   // The contact, matched the way the webhook matches (trunk-prefix tolerant).
@@ -136,6 +176,11 @@ export async function sendOutreach(params: OutreachParams): Promise<OutreachResu
     contact = created as ContactRow;
     contactCreated = true;
   }
+
+  // The role and labels go on before anything is sent: a tagging fault stops
+  // here, with nothing half-done on the other side.
+  const tagNames = [...(intent ? [ROLE_TAGS[intent]] : []), ...(params.tags || [])];
+  const tags = await tagContact(db, userId, contact.id, tagNames);
 
   // The conversation — and whether this phone is already someone we talk to.
   const { data: existing, error: convError } = await db
@@ -186,7 +231,7 @@ export async function sendOutreach(params: OutreachParams): Promise<OutreachResu
       userId,
       conversationId,
       messageType: templateName ? "template" : "text",
-      contentText: templateName ? null : (text || "").trim(),
+      contentText: templateName ? body : (text || "").trim(),
       templateName: templateName || null,
       templateLanguage: language,
       templateParams: templateParams || [],
@@ -199,6 +244,7 @@ export async function sendOutreach(params: OutreachParams): Promise<OutreachResu
       waMessageId: result.waMessageId,
       contactCreated,
       conversationCreated,
+      tags,
     };
   } catch (err) {
     if (err instanceof SendError) {
@@ -206,4 +252,45 @@ export async function sendOutreach(params: OutreachParams): Promise<OutreachResu
     }
     throw err;
   }
+}
+
+type AdminDb = ReturnType<typeof supabaseAdmin>;
+
+/**
+ * Put the named tags on the contact, creating the ones the account does not
+ * have yet. Names match existing tags case-insensitively so "prospect" and
+ * "Prospect" stay one tag. Returns the names as stored, in the order given.
+ */
+async function tagContact(db: AdminDb, userId: string, contactId: string, names: string[]): Promise<string[]> {
+  const wanted = names.map((n) => n.trim()).filter(Boolean);
+  if (!wanted.length) return [];
+  const { data: rows, error } = await db.from("tags").select("id, name").eq("user_id", userId);
+  if (error) {
+    throw new OutreachError(`tags lookup failed: ${error.message}`, 500);
+  }
+  const existing = (rows ?? []) as Array<{ id: string; name: string }>;
+  const applied: string[] = [];
+  for (const name of wanted) {
+    let tag = existing.find((t) => t.name.trim().toLowerCase() === name.toLowerCase());
+    if (!tag) {
+      const { data: created, error: createError } = await db
+        .from("tags")
+        .insert({ user_id: userId, name })
+        .select("id, name")
+        .single();
+      if (createError || !created) {
+        throw new OutreachError(`tag "${name}" could not be created: ${createError?.message ?? "unknown"}`, 500);
+      }
+      tag = created as { id: string; name: string };
+      existing.push(tag);
+    }
+    const { error: linkError } = await db
+      .from("contact_tags")
+      .upsert({ contact_id: contactId, tag_id: tag.id }, { onConflict: "contact_id,tag_id" });
+    if (linkError) {
+      throw new OutreachError(`contact could not be tagged "${name}": ${linkError.message}`, 500);
+    }
+    if (!applied.includes(tag.name)) applied.push(tag.name);
+  }
+  return applied;
 }

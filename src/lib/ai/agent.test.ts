@@ -7,6 +7,12 @@ import {
   stringifyHistoryMessage,
   stripCardNarration,
   type HistoryRow,
+  detectIntent,
+  detectStage,
+  intentFromTags,
+  startedByUs,
+  OUTREACH_GUIDANCE,
+  guardSponsorScript,
 } from './agent';
 
 describe('stripCardNarration', () => {
@@ -340,5 +346,97 @@ describe('shouldForceAppCard — non-Latin scripts (regression: \b is ASCII-only
     for (const t of ['جديد', 'አዲስ']) {
       expect(shouldForceAppCard([cust('hi'), bot('registered or new?'), cust(t)], 'unknown', t)).toBe(true);
     }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// Outreach: the conversation WE opened (regression: the first live test,
+// 2026-09-20 — a sponsor's "Yes, send profiles" tap got the Amharic
+// maid-registration reply because nothing said who they were)
+// ════════════════════════════════════════════════════════════════════
+
+const ourTemplate = (text: string | null = 'Hello, we saw your ad for household help in Al Shamkha. Reply YES, or tell us what you need.'): HistoryRow => ({
+  sender_type: 'agent', content_type: 'template', content_text: text,
+  ai_media_summary: null, agent_kind: 'human', created_at: new Date().toISOString(),
+});
+const customer = (text: string): HistoryRow => ({
+  sender_type: 'customer', content_type: 'text', content_text: text,
+  ai_media_summary: null, agent_kind: null, created_at: new Date().toISOString(),
+});
+
+describe('intentFromTags — the role tag outreach puts on the contact', () => {
+  it('reads Sponsor / Job seeker regardless of case and ignores other labels', () => {
+    expect(intentFromTags(['Prospect', 'sponsor'])).toBe('sponsor');
+    expect(intentFromTags(['Job seeker'])).toBe('job_seeker');
+    expect(intentFromTags(['job_seeker', 'VIP'])).toBe('job_seeker');
+    expect(intentFromTags(['VIP'])).toBeNull();
+    expect(intentFromTags([])).toBeNull();
+  });
+});
+
+describe('detectIntent — seeded by the role tag', () => {
+  it('a button tap with no hire/work keyword takes the tagged role instead of unknown', () => {
+    const history = [ourTemplate(), customer('Yes, send profiles')];
+    expect(detectIntent(history)).toBe('unknown');
+    expect(detectIntent(history, 'sponsor')).toBe('sponsor');
+    expect(detectIntent(history, 'job_seeker')).toBe('job_seeker');
+  });
+
+  it("the customer's own words still win over the tag", () => {
+    const history = [ourTemplate(), customer('I am a maid looking for work')];
+    expect(detectIntent(history, 'sponsor')).toBe('job_seeker');
+  });
+});
+
+describe('detectStage — a sponsor answering our template', () => {
+  it('is qualified, not triaged: QUALIFICATION rather than DISCOVERY', () => {
+    const history = [ourTemplate(), customer('Yes, send profiles')];
+    expect(detectStage(history, 'unknown')).toBe('DISCOVERY');
+    expect(detectStage(history, 'sponsor')).toBe('QUALIFICATION');
+  });
+
+  it('a decline closes the conversation — no card, no question', () => {
+    for (const text of ['No thanks', 'Not now', 'not interested', 'STOP', 'لا شكرا', 'غير مهتم']) {
+      expect(detectStage([ourTemplate(), customer(text)], 'sponsor')).toBe('CLOSE');
+    }
+    expect(detectStage([ourTemplate(), customer('Tell us what you need')], 'sponsor')).toBe('QUALIFICATION');
+  });
+});
+
+describe('startedByUs + OUTREACH_GUIDANCE', () => {
+  it('is true only when our template opened the conversation', () => {
+    expect(startedByUs([ourTemplate(), customer('Yes, send profiles')])).toBe(true);
+    expect(startedByUs([customer('hi'), ourTemplate()])).toBe(false);
+    expect(startedByUs([])).toBe(false);
+    const ourText: HistoryRow = { ...ourTemplate('Hello'), content_type: 'text' };
+    expect(startedByUs([ourText, customer('hi')])).toBe(false);
+  });
+
+  it('tells the model what the two buttons mean and forbids the maid persona', () => {
+    expect(OUTREACH_GUIDANCE).toMatch(/send profiles/i);
+    expect(OUTREACH_GUIDANCE).toMatch(/tell us what you need/i);
+    expect(OUTREACH_GUIDANCE).toMatch(/never Amharic/i);
+    expect(OUTREACH_GUIDANCE).toMatch(/send_app_download_card/);
+    expect(OUTREACH_GUIDANCE).toMatch(/live-in or live-out/i);
+  });
+});
+
+describe('guardSponsorScript — a sponsor never gets an Amharic reply', () => {
+  it('replaces Ethiopic text for an English- or Arabic-speaking sponsor with a line in their language', () => {
+    const am = 'ከላይ ያለውን ቁልፍ ተጫን — ይህ ኢትዮጵያዊ ሜይድስ ኦፊሴላዊ መተግበሪያ ነው 🌸';
+    const en = guardSponsorScript(am, { intent: 'sponsor', language: 'English', stage: 'QUALIFICATION', cardSent: true });
+    expect(en).not.toMatch(/[ሀ-፿]/);
+    expect(en).toMatch(/button above/i);
+    const ar = guardSponsorScript(am, { intent: 'sponsor', language: 'Arabic', stage: 'QUALIFICATION', cardSent: false });
+    expect(ar).not.toMatch(/[ሀ-፿]/);
+    expect(ar).toMatch(/[؀-ۿ]/);
+  });
+
+  it('leaves job seekers, Amharic speakers and clean replies alone', () => {
+    const am = 'ሰላም 🌸';
+    expect(guardSponsorScript(am, { intent: 'job_seeker', language: 'English', stage: 'QUALIFICATION', cardSent: false })).toBe(am);
+    expect(guardSponsorScript(am, { intent: 'sponsor', language: 'Amharic', stage: 'QUALIFICATION', cardSent: false })).toBe(am);
+    const ok = 'Tap the button above to browse verified profiles 🌸';
+    expect(guardSponsorScript(ok, { intent: 'sponsor', language: 'English', stage: 'QUALIFICATION', cardSent: true })).toBe(ok);
   });
 });
