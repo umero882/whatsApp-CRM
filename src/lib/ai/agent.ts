@@ -929,7 +929,23 @@ export function shouldForceAppCard(
 export function extractChoicesFromText(
   text: string,
 ): { body: string; options: string[] } | null {
-  return extractBulletChoices(text) ?? extractProseChoices(text);
+  return extractArtifactChoices(text) ?? extractBulletChoices(text) ?? extractProseChoices(text);
+}
+
+/**
+ * The model IMITATED the way stringifyHistoryMessage re-frames our own
+ * earlier tappable questions — "[you sent tappable options via
+ * reply_with_choices] Q [options: A | B]" — and wrote that line as its
+ * reply (seen live: the third question of a qualification run, after two
+ * such lines in the history). Read it back into a body and options.
+ */
+function extractArtifactChoices(text: string): { body: string; options: string[] } | null {
+  const m = text.trim().match(/^(?:\[you sent tappable options via reply_with_choices\]\s*)?([\s\S]*?)\s*\[options:\s*([^\]]+)\]$/i);
+  if (!m) return null;
+  const body = m[1].trim();
+  const options = m[2].split('|').map((o) => o.trim()).filter(Boolean);
+  if (!body || options.length < 2 || options.length > 10 || options.some((o) => o.length > 30)) return null;
+  return { body, options };
 }
 
 /** "Question?\n▸ A\n- B\n1. C" — trailing bullet/numbered option lines. */
