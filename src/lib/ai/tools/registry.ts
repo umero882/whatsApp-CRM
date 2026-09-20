@@ -38,6 +38,12 @@ export interface ToolContext {
    */
   cardLanguage?: 'en' | 'ar' | 'am';
   /**
+   * The sponsor's market on record — from a tag on the contact ("UAE",
+   * "Saudi Arabia"…, put there by outreach or by an earlier search).
+   * search_maids falls back to it when the model gives no country.
+   */
+  market?: { iso: string; currency: string; name: string } | null;
+  /**
    * Credentials needed by render-side tools (e.g. send_maid_cards) so
    * they can post directly to Meta API without re-fetching the user's
    * whatsapp_config row. Populated by agent.ts when it builds the

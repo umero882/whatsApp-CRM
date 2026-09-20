@@ -14,6 +14,7 @@ import {
   OUTREACH_GUIDANCE,
   guardSponsorScript,
   INTENT_GUIDANCE,
+  marketFromTags,
 } from './agent';
 
 describe('stripCardNarration', () => {
@@ -491,5 +492,15 @@ describe('sponsor qualification across the GCC (2026-09-20: Saudi families are p
   it('the guidance passes the country to search_maids and does not assume the UAE', () => {
     expect(INTENT_GUIDANCE.sponsor).toMatch(/search_maids[^\n]*country/);
     expect(INTENT_GUIDANCE.sponsor).toMatch(/country and city/i);
+  });
+});
+
+describe('marketFromTags — the sponsor market on the contact (2026-09-21: "Dubai" fell out of the history window)', () => {
+  it('reads a country, emirate or city tag and ignores the rest', () => {
+    expect(marketFromTags(['Sponsor', 'Prospect', 'UAE'])).toEqual({ iso: 'AE', currency: 'AED', name: 'UAE' });
+    expect(marketFromTags(['Saudi Arabia'])).toMatchObject({ iso: 'SA' });
+    expect(marketFromTags(['Dubai'])).toMatchObject({ iso: 'AE' });
+    expect(marketFromTags(['Sponsor', 'VIP'])).toBeNull();
+    expect(marketFromTags([])).toBeNull();
   });
 });

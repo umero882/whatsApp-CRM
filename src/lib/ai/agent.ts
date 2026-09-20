@@ -40,6 +40,7 @@ import type { ToolHandler, ToolContext } from './tools/registry';
 import { findTool, toolsToSpecs } from './tools/registry';
 import { makeHasuraClient } from './tools/hasura';
 import { lookupMaidByPhone } from './maid-lookup';
+import { resolveSponsorCountry, type SponsorMarket } from './markets';
 
 /**
  * Stage names match the documented playbook in the Habiba preset
@@ -255,7 +256,12 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   // when the customer's own words carry no hire/work keyword: a template
   // button tap ("Yes, send profiles") says nothing by itself. Non-fatal:
   // without it we are exactly where we were.
-  const knownIntent = intentFromTags(await loadContactTagNames(sb, contact.id));
+  const tagNames = await loadContactTagNames(sb, contact.id);
+  const knownIntent = intentFromTags(tagNames);
+  // The sponsor's market on record ("UAE", "Saudi Arabia"…): it outlives
+  // the history window, so a "Dubai" tapped twenty messages ago still
+  // steers search_maids. Outreach sets it from the ad's city.
+  const market = marketFromTags(tagNames);
   const intent = detectIntent(history, knownIntent);
   const stage = detectStage(history, intent);
   const customerContext = buildCustomerContext(contact, history);
@@ -301,6 +307,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     hasuraUrl: agent.hasura_url,
     hasuraAdminSecret,
     cardLanguage: CARD_LANG[language],
+    market,
     whatsapp: {
       phoneNumberId: waCfg.phone_number_id,
       accessToken,
@@ -321,16 +328,16 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
 
   // ─── Compose system prompt ──────────────────────────────────────────
   const persona = (agent.system_prompt ?? '').trim() || defaultPersona(agent.business_name);
-  const runtimeBlock = buildRuntimeBlock(stage, intent, language, customerContext, stageTools, allowTools, maidPassportOnFile, channel);
+  const runtimeBlock = buildRuntimeBlock(stage, intent, language, customerContext, stageTools, allowTools, maidPassportOnFile, channel, market);
   const directive = OPERATING_DIRECTIVE;
   // APP_INFO_BLOCK is injected server-side (not only in the editable
   // persona) so the app-funnel policy survives any custom prompt. The
   // outreach block likewise: it only exists for a thread we opened.
   const systemPrompt = [persona, APP_INFO_BLOCK, runtimeBlock, ...(outreach ? [OUTREACH_GUIDANCE] : []), directive].join('\n\n');
 
-  console.log('[ai-agent] start convo=%s stage=%s intent=%s lang=%s tools=%d ctx={returning:%s,name:%s,tagged:%s,outreach:%s}',
+  console.log('[ai-agent] start convo=%s stage=%s intent=%s lang=%s tools=%d ctx={returning:%s,name:%s,tagged:%s,market:%s,outreach:%s}',
     conv.id, stage, intent, language, stageTools.length, customerContext.isReturning, customerContext.name ?? '?',
-    knownIntent ?? '-', outreach);
+    knownIntent ?? '-', market?.iso ?? '-', outreach);
 
   // ─── Messages ───────────────────────────────────────────────────────
   const messages: AgentMessage[] = [{ role: 'system', content: systemPrompt }];
@@ -639,6 +646,19 @@ export function intentFromTags(names: string[]): Intent | null {
     const name = raw.trim().toLowerCase().replace(/[\s_-]+/g, ' ');
     if (name === 'sponsor') return 'sponsor';
     if (name === 'job seeker') return 'job_seeker';
+  }
+  return null;
+}
+
+/**
+ * The market a contact's tags state — a tag named like a GCC country,
+ * emirate or city ("UAE", "Saudi Arabia", "Dubai"). The first that
+ * resolves wins. Pure — exported for tests.
+ */
+export function marketFromTags(names: string[]): SponsorMarket | null {
+  for (const name of names) {
+    const market = resolveSponsorCountry(name);
+    if (market) return market;
   }
   return null;
 }
@@ -1038,8 +1058,12 @@ function buildRuntimeBlock(
   toolsAllowedThisTurn: boolean,
   maidPassportOnFile: boolean | null,
   channel: Channel = 'whatsapp',
+  market: SponsorMarket | null = null,
 ): string {
   const toolList = activeTools.map((t) => `${t.name} — ${t.description.split('.')[0]}.`).join('\n  • ');
+  const marketLine = market
+    ? `\nSPONSOR MARKET: ${market.name} (${market.currency}) — on record for this customer. Pass country "${market.name}" to search_maids unless they say they are somewhere else now; never re-ask it, never infer it from a card's currency.\n`
+    : '';
   const stageGuide = STAGE_GUIDANCE[stage];
   const intentGuide = INTENT_GUIDANCE[intent];
   const customerLine = ctx.name
@@ -1062,7 +1086,7 @@ INTENT: ${intent}${channelLine}
 LANGUAGE: ${language} (reply in this language)
 ${customerLine}
 Customer turns so far in this conversation: ${ctx.customerTurns}
-
+${marketLine}
 INTENT GUIDANCE (critical — read first):
 ${intentGuide}
 

@@ -33,6 +33,7 @@
 import { supabaseAdmin } from "@/lib/flows/admin-client";
 import { sendConversationMessage, SendError } from "@/lib/whatsapp/send-message";
 import { isValidE164, phonesMatch, sanitizePhoneForMeta } from "@/lib/whatsapp/phone-utils";
+import { resolveSponsorCountry } from "@/lib/ai/markets";
 
 export class OutreachError extends Error {
   readonly status: number;
@@ -62,6 +63,13 @@ export interface OutreachParams {
   intent?: OutreachIntent | null;
   /** Labels for the inbox, created when new; matched to existing ones by name, case-insensitively. */
   tags?: string[];
+  /**
+   * Where the person is — a GCC country, emirate or city in any spelling.
+   * Becomes a market tag on the contact ("UAE", "Saudi Arabia"…) that the
+   * agent's candidate search keeps to. When omitted, the template's first
+   * parameter (the ad's city) or the name ("Family in Dubai") is read.
+   */
+  country?: string | null;
 }
 
 export type OutreachIntent = "sponsor" | "job_seeker";
@@ -179,7 +187,14 @@ export async function sendOutreach(params: OutreachParams): Promise<OutreachResu
 
   // The role and labels go on before anything is sent: a tagging fault stops
   // here, with nothing half-done on the other side.
-  const tagNames = [...(intent ? [ROLE_TAGS[intent]] : []), ...(params.tags || [])];
+  const market = resolveSponsorCountry(params.country)
+    ?? resolveSponsorCountry((templateParams || [])[0])
+    ?? resolveSponsorCountry(name);
+  const tagNames = [
+    ...(intent ? [ROLE_TAGS[intent]] : []),
+    ...(market ? [market.name] : []),
+    ...(params.tags || []),
+  ];
   const tags = await tagContact(db, userId, contact.id, tagNames);
 
   // The conversation — and whether this phone is already someone we talk to.
