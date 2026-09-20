@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { MobileOwnerError, resolveOwnerUserId } from "@/lib/mobile/auth";
-import { OutreachError, sendOutreach } from "@/lib/outreach/whatsapp";
+import { OutreachError, sendOutreach, type OutreachIntent } from "@/lib/outreach/whatsapp";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rate-limit";
 
 /**
@@ -22,10 +22,14 @@ import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rate-limit
  *   template_language?: "en_US",
  *   template_params?: ["Al Shamkha"],
  *   text?: "…",                        only inside an open 24-hour window
- *   allow_existing?: false             let a second message reach a known number
+ *   allow_existing?: false,            let a second message reach a known number
+ *   intent?: "sponsor" | "job_seeker", who this is — becomes the contact's role tag,
+ *                                      which the AI agent starts from when the reply
+ *                                      itself carries no hire/work keyword
+ *   tags?: ["Prospect"]                labels for the inbox (created when new)
  * }
  * 200 { success, contact_id, conversation_id, message_id, whatsapp_message_id,
- *       contact_created, conversation_created }
+ *       contact_created, conversation_created, tags }
  * 409 when the number is already a customer, or was already written to.
  */
 export async function POST(request: Request) {
@@ -55,6 +59,9 @@ export async function POST(request: Request) {
   const templateParams = Array.isArray(body.template_params)
     ? body.template_params.map((p: unknown) => String(p ?? ""))
     : [];
+  const tags = Array.isArray(body.tags)
+    ? body.tags.filter((t: unknown): t is string => typeof t === "string" && t.trim().length > 0)
+    : [];
 
   try {
     const result = await sendOutreach({
@@ -67,6 +74,8 @@ export async function POST(request: Request) {
       templateParams,
       text: typeof body.text === "string" ? body.text : null,
       allowExisting: body.allow_existing === true,
+      intent: typeof body.intent === "string" ? (body.intent as OutreachIntent) : null,
+      tags,
     });
     return NextResponse.json({
       success: true,
@@ -76,6 +85,7 @@ export async function POST(request: Request) {
       whatsapp_message_id: result.waMessageId,
       contact_created: result.contactCreated,
       conversation_created: result.conversationCreated,
+      tags: result.tags,
     });
   } catch (err) {
     if (err instanceof OutreachError) {

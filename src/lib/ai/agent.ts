@@ -250,11 +250,18 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   }
 
   // ─── Stage + context ────────────────────────────────────────────────
-  const intent = detectIntent(history);
+  // The contact's role tag ("Sponsor" / "Job seeker" — put there by the
+  // outreach endpoint, or by hand in the inbox) is the starting intent
+  // when the customer's own words carry no hire/work keyword: a template
+  // button tap ("Yes, send profiles") says nothing by itself. Non-fatal:
+  // without it we are exactly where we were.
+  const knownIntent = intentFromTags(await loadContactTagNames(sb, contact.id));
+  const intent = detectIntent(history, knownIntent);
   const stage = detectStage(history, intent);
   const customerContext = buildCustomerContext(contact, history);
   const language = detectLanguage(last.content_text ?? '');
   const allowTools = TOOL_STAGES.has(stage);
+  const outreach = startedByUs(history);
 
   // ─── Provider + tools ───────────────────────────────────────────────
   const accessToken = decrypt(waCfg.access_token);
@@ -316,11 +323,13 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
   const runtimeBlock = buildRuntimeBlock(stage, intent, language, customerContext, stageTools, allowTools, maidPassportOnFile, channel);
   const directive = OPERATING_DIRECTIVE;
   // APP_INFO_BLOCK is injected server-side (not only in the editable
-  // persona) so the app-funnel policy survives any custom prompt.
-  const systemPrompt = [persona, APP_INFO_BLOCK, runtimeBlock, directive].join('\n\n');
+  // persona) so the app-funnel policy survives any custom prompt. The
+  // outreach block likewise: it only exists for a thread we opened.
+  const systemPrompt = [persona, APP_INFO_BLOCK, runtimeBlock, ...(outreach ? [OUTREACH_GUIDANCE] : []), directive].join('\n\n');
 
-  console.log('[ai-agent] start convo=%s stage=%s intent=%s lang=%s tools=%d ctx={returning:%s,name:%s}',
-    conv.id, stage, intent, language, stageTools.length, customerContext.isReturning, customerContext.name ?? '?');
+  console.log('[ai-agent] start convo=%s stage=%s intent=%s lang=%s tools=%d ctx={returning:%s,name:%s,tagged:%s,outreach:%s}',
+    conv.id, stage, intent, language, stageTools.length, customerContext.isReturning, customerContext.name ?? '?',
+    knownIntent ?? '-', outreach);
 
   // ─── Messages ───────────────────────────────────────────────────────
   const messages: AgentMessage[] = [{ role: 'system', content: systemPrompt }];
@@ -469,6 +478,15 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
           }
         }
       }
+      // Deterministic guard: a sponsor (a GCC household) never gets an
+      // Amharic reply, whatever the model made of the name on the contact.
+      const guarded = guardSponsorScript(text, {
+        intent, language, stage, cardSent: toolsUsed.includes('send_app_download_card'),
+      });
+      if (guarded !== text) {
+        console.warn('[ai-agent] sponsor reply was in Ethiopic script — replaced with the %s line', language);
+        text = guarded;
+      }
       console.log('[ai-agent] turn', turn + 1, 'reply:', text.slice(0, 120));
       await postAndPersist(sb, waCfg, accessToken, contact, conv.id, text, channel, destination);
       const escalated = toolsUsed.includes('escalate_to_human');
@@ -577,6 +595,10 @@ const SPONSOR_PATTERNS = [
   /\b(احتاج|ابغى|اريد|اطلب|ابحث\s*عن).*(خادم|مربية|عاملة|سائق|ممرضة)/i,
 ];
 
+/** "No thanks" to a message we sent first — also the wording a template's decline button carries. */
+const DECLINE_RE =
+  /^(?:no,?\s*thanks?|no,?\s*thank\s*you|not\s*now|not\s*interested|no\s*need|stop|unsubscribe|remove\s*me|don'?t\s*(?:message|contact|text)\s*me)\b|^(?:لا\s*شكرا|لا\s*شكراً|غير\s*مهتم|مش\s*مهتم|توقف)/i;
+
 const JOB_SEEKER_PATTERNS = [
   /\b(i\s*(need|want|am\s*looking\s*for)\s*(a\s*)?(job|work|position|placement|employment))\b/i,
   /\b(looking\s*for\s*(a\s*)?(job|work|position|placement))\b/i,
@@ -587,7 +609,12 @@ const JOB_SEEKER_PATTERNS = [
   /\b(انا\s*خادمة|مربية\s*اطفال|ابحث\s*عن\s*عمل)/i,
 ];
 
-function detectIntent(history: HistoryRow[]): Intent {
+/**
+ * `known` is the role already on record (the contact's role tag): it is
+ * the answer when nothing the customer wrote says otherwise — their own
+ * words always win. Pure — exported for tests.
+ */
+export function detectIntent(history: HistoryRow[], known: Intent | null = null): Intent {
   // Walk the customer messages in REVERSE (most recent first) so the
   // latest signal wins — but stop at the first definitive classification
   // to avoid re-flipping on later neutral messages.
@@ -598,7 +625,50 @@ function detectIntent(history: HistoryRow[]): Intent {
     if (SPONSOR_PATTERNS.some((p) => p.test(text))) return 'sponsor';
     if (JOB_SEEKER_PATTERNS.some((p) => p.test(text))) return 'job_seeker';
   }
-  return 'unknown';
+  return known && known !== 'unknown' ? known : 'unknown';
+}
+
+/**
+ * The role a contact's tags state. The outreach endpoint writes "Sponsor"
+ * / "Job seeker" (src/lib/outreach/whatsapp.ts ROLE_TAGS); a person can
+ * put the same tag on by hand. Other labels are ignored. Pure.
+ */
+export function intentFromTags(names: string[]): Intent | null {
+  for (const raw of names) {
+    const name = raw.trim().toLowerCase().replace(/[\s_-]+/g, ' ');
+    if (name === 'sponsor') return 'sponsor';
+    if (name === 'job seeker') return 'job_seeker';
+  }
+  return null;
+}
+
+async function loadContactTagNames(sb: SupabaseClient, contactId: string): Promise<string[]> {
+  try {
+    const { data, error } = await sb
+      .from('contact_tags')
+      .select('tag:tags(name)')
+      .eq('contact_id', contactId);
+    if (error) throw new Error(error.message);
+    const names: string[] = [];
+    for (const row of (data ?? []) as Array<{ tag: { name: string } | { name: string }[] | null }>) {
+      const tag = Array.isArray(row.tag) ? row.tag[0] : row.tag;
+      if (tag?.name) names.push(tag.name);
+    }
+    return names;
+  } catch (e) {
+    console.warn('[ai-agent] contact tags unavailable:', e instanceof Error ? e.message : e);
+    return [];
+  }
+}
+
+/**
+ * Did WE open this conversation? True when the oldest message in the
+ * window is our template — an outreach thread (PyRunner's Prospects, or
+ * a template sent from the inbox to start a chat). Pure.
+ */
+export function startedByUs(history: HistoryRow[]): boolean {
+  const first = history[0];
+  return !!first && first.sender_type === 'agent' && first.content_type === 'template';
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -614,7 +684,7 @@ function detectIntent(history: HistoryRow[]): Intent {
  * (and unlock tools) until we've actually gathered enough criteria,
  * so the model can't search/list with empty filters.
  */
-function detectStage(history: HistoryRow[], intent: Intent): Stage {
+export function detectStage(history: HistoryRow[], intent: Intent): Stage {
   if (history.length === 0) return 'GREETING';
 
   const last = history[history.length - 1];
@@ -637,8 +707,13 @@ function detectStage(history: HistoryRow[], intent: Intent): Stage {
     return 'GREETING';
   }
 
-  // CLOSE
+  // CLOSE — a wrap-up, or a decline of a message we sent first ("No
+  // thanks" / "Not now" / "Stop"): one polite line and nothing else.
+  // (\b is ASCII-only in JS, so the Arabic alternatives sit outside it.)
   if (/^(thanks|thank you|ok|okay|bye|goodbye|cheers|👍|🙏|شكر|متشكر|መልካም)\b/i.test(lastTextLower)) {
+    return 'CLOSE';
+  }
+  if (DECLINE_RE.test(lastTextLower)) {
     return 'CLOSE';
   }
 
@@ -1076,6 +1151,35 @@ NEW + wants to hire or find work → call send_app_download_card.
 EXISTING or has an issue → ask what they need help with and assist.
 Do NOT assume one side. Do NOT ask emirate/duties yet.`,
 };
+
+/**
+ * Injected only for a thread WE opened (see startedByUs): our first
+ * message is a template answering the customer's own classifieds ad, so
+ * the person is a household that asked for help — never a job seeker —
+ * and the two buttons on that template have exact meanings. Exported
+ * for tests.
+ */
+export const OUTREACH_GUIDANCE = `═══ OUTREACH — WE WROTE FIRST ═══
+This conversation was opened by US: our first message is an approved template answering the customer's OWN classifieds ad asking for household help (the ad's city is in that message). The customer is a SPONSOR — a household in the GCC that wants to hire — never a job seeker, whatever the name on the contact looks like. Reply in the LANGUAGE above (English or Arabic) — never Amharic, and never the maid-registration wording.
+• "Yes, send profiles" / YES / "send me candidates": they want to see profiles. Call send_app_download_card (language en or ar to match) and reply with ONE sentence: verified profiles with photos, experience and salary are in our app — and if they tell us live-in or live-out and when they need her to start, our team will shortlist for them. Do NOT ask "are you registered?", do NOT triage, do NOT ask a question in the same message as the card.
+• "Tell us what you need" / a description of what they need: qualify — ONE question per turn, starting with live-in or live-out via reply_with_choices, then the start date. Do NOT send the card on this turn.
+• "No thanks" / "Not now" / STOP: one short thank-you and nothing else — no card, no question, no follow-up.
+• Never say we "saw their ad" again — they know; go straight to helping.`;
+
+/**
+ * A sponsor is a GCC household; an Ethiopic-script reply to one is the
+ * maid persona leaking through (seen live on 2026-09-20 with a contact
+ * whose name was the business itself). Replace it with a safe line in
+ * the conversation's language. Pure — exported for tests.
+ */
+export function guardSponsorScript(
+  text: string,
+  ctx: { intent: Intent; language: Lang; stage: Stage; cardSent: boolean },
+): string {
+  if (ctx.intent !== 'sponsor' || ctx.language === 'Amharic') return text;
+  if (!/[ሀ-፿]/.test(text)) return text;
+  return ctx.cardSent ? cardPointerLine(ctx.language) : stageHoldingReply(ctx.stage, ctx.language);
+}
 
 const OPERATING_DIRECTIVE = `═══ OPERATING RULES ═══
 • You are speaking DIRECTLY to the customer on WhatsApp. Your output IS the message they receive — no preamble like "Sure, I can help".

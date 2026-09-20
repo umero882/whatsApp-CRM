@@ -7,7 +7,9 @@ const h = vi.hoisted(() => {
     contacts: [] as Array<{ id: string; user_id: string; phone: string; name: string | null; email?: string | null }>,
     conversations: [] as Array<{ id: string; user_id: string; contact_id: string; channel: string }>,
     messages: [] as Array<{ id: string; conversation_id: string; sender_type: string }>,
-    templates: [] as Array<{ user_id: string; name: string; language: string; status: string }>,
+    templates: [] as Array<{ user_id: string; name: string; language: string; status: string; body_text?: string }>,
+    tags: [] as Array<{ id: string; user_id: string; name: string }>,
+    contactTags: [] as Array<{ contact_id: string; tag_id: string }>,
     inserted: [] as Array<{ table: string; row: Record<string, unknown> }>,
     send: vi.fn(),
   };
@@ -63,6 +65,32 @@ vi.mock("@/lib/flows/admin-client", () => ({
           }),
         };
       }
+      if (table === "tags") {
+        return {
+          select: () => ({ eq: async (_k: string, uid: string) => ({ data: s.tags.filter((t) => t.user_id === uid) }) }),
+          insert: (row: Record<string, unknown>) => ({
+            select: () => ({
+              single: async () => {
+                const created = { id: `tag-${s.tags.length + 1}`, ...row } as (typeof s.tags)[number];
+                s.tags.push(created);
+                s.inserted.push({ table, row });
+                return { data: created };
+              },
+            }),
+          }),
+        };
+      }
+      if (table === "contact_tags") {
+        return {
+          upsert: async (row: { contact_id: string; tag_id: string }) => {
+            if (!s.contactTags.some((c) => c.contact_id === row.contact_id && c.tag_id === row.tag_id)) {
+              s.contactTags.push(row);
+            }
+            s.inserted.push({ table, row });
+            return { error: null };
+          },
+        };
+      }
       if (table === "message_templates") {
         return {
           select: () => ({
@@ -91,8 +119,13 @@ beforeEach(() => {
   h.state.messages.length = 0;
   h.state.inserted.length = 0;
   h.state.templates.length = 0;
+  h.state.tags.length = 0;
+  h.state.contactTags.length = 0;
   // Statuses as the sync route stores them: capitalised.
-  h.state.templates.push({ user_id: "owner-1", name: "ad_reply", language: "en_US", status: "Approved" });
+  h.state.templates.push({
+    user_id: "owner-1", name: "ad_reply", language: "en_US", status: "Approved",
+    body_text: "Hello, we saw your ad for household help in {{1}}. Reply YES, or tell us what you need.",
+  });
   h.state.templates.push({ user_id: "owner-1", name: "ad_reply", language: "ar", status: "Approved" });
   h.state.templates.push({ user_id: "owner-1", name: "ad_reply_v2", language: "en_US", status: "Pending" });
   h.state.send.mockReset();
@@ -116,6 +149,7 @@ describe("sendOutreach", () => {
       waMessageId: "wa-1",
       contactCreated: true,
       conversationCreated: true,
+      tags: [],
     });
     expect(h.state.inserted[0]).toEqual({
       table: "contacts",
@@ -133,9 +167,49 @@ describe("sendOutreach", () => {
         templateName: "ad_reply",
         templateLanguage: "en_US",
         templateParams: ["Al Shamkha"],
+        contentText: "Hello, we saw your ad for household help in Al Shamkha. Reply YES, or tell us what you need.",
         pauseAi: false,
       }),
     );
+  });
+
+  it("tags the contact with its role and the caller's labels before sending, creating the tags once", async () => {
+    h.state.tags.push({ id: "tag-old", user_id: "owner-1", name: "prospect" });
+    const result = await sendOutreach({
+      userId: "owner-1",
+      phone: "+971501234567",
+      name: "Family in Al Shamkha",
+      templateName: "ad_reply",
+      templateParams: ["Al Shamkha"],
+      intent: "sponsor",
+      tags: ["Prospect", "Mourjan"],
+    });
+    expect(result.tags).toEqual(["Sponsor", "prospect", "Mourjan"]);
+    // "Prospect" matched the existing tag regardless of case; the other two were created.
+    expect(h.state.tags.map((t) => t.name)).toEqual(["prospect", "Sponsor", "Mourjan"]);
+    expect(h.state.contactTags).toEqual([
+      { contact_id: "ct-1", tag_id: "tag-2" },
+      { contact_id: "ct-1", tag_id: "tag-old" },
+      { contact_id: "ct-1", tag_id: "tag-3" },
+    ]);
+    // Tagging happened before the send so a tagging fault never leaves a half-done contact.
+    const order = h.state.inserted.map((i) => i.table);
+    expect(order.indexOf("contact_tags")).toBeGreaterThan(-1);
+    expect(h.state.send).toHaveBeenCalledTimes(1);
+
+    // A job seeker gets the other role tag; no intent, no role tag.
+    await sendOutreach({ userId: "owner-1", phone: "+971501234568", templateName: "ad_reply", intent: "job_seeker" });
+    expect(h.state.tags.map((t) => t.name)).toContain("Job seeker");
+    const before = h.state.contactTags.length;
+    await sendOutreach({ userId: "owner-1", phone: "+971501234569", templateName: "ad_reply" });
+    expect(h.state.contactTags.length).toBe(before);
+  });
+
+  it("refuses an unknown intent", async () => {
+    await expect(
+      sendOutreach({ userId: "owner-1", phone: "+971501234567", templateName: "ad_reply", intent: "agency" as never }),
+    ).rejects.toMatchObject({ status: 400, message: expect.stringContaining("intent") });
+    expect(h.state.send).not.toHaveBeenCalled();
   });
 
   it("reuses a contact whose number matches with or without the trunk zero", async () => {
@@ -168,6 +242,18 @@ describe("sendOutreach", () => {
     const again = await sendOutreach({ userId: "owner-1", phone: "+971501234567", text: "Following up", allowExisting: true });
     expect(again.conversationId).toBe("cv-9");
     expect(h.state.send).toHaveBeenCalledWith(expect.objectContaining({ messageType: "text", contentText: "Following up" }));
+  });
+
+  it("renders the catalog body with the parameters, leaving a missing one as its placeholder", async () => {
+    h.state.templates.push({
+      user_id: "owner-1", name: "two_vars", language: "en_US", status: "Approved",
+      body_text: "Hi {{1}}, about {{2}}.",
+    });
+    await sendOutreach({ userId: "owner-1", phone: "+971501234567", templateName: "two_vars", templateParams: ["Sara"] });
+    expect(h.state.send).toHaveBeenLastCalledWith(expect.objectContaining({ contentText: "Hi Sara, about {{2}}." }));
+    // No body synced (an old catalog row): nothing invented.
+    await sendOutreach({ userId: "owner-1", phone: "+971501234568", templateName: "ad_reply", templateLanguage: "ar" });
+    expect(h.state.send).toHaveBeenLastCalledWith(expect.objectContaining({ contentText: null }));
   });
 
   it("takes the template's language from the catalog and refuses one that is not approved", async () => {
