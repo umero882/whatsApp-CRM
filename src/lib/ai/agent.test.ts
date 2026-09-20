@@ -155,6 +155,27 @@ describe('stringifyHistoryMessage — interactive choices rendering', () => {
   });
 });
 
+describe('extractChoicesFromText — the history artifact imitated (production convo 60dfac64, 2026-09-20)', () => {
+  it('turns "[you sent tappable options via reply_with_choices] Q [options: A | B]" into real choices', () => {
+    const r = extractChoicesFromText(
+      '[you sent tappable options via reply_with_choices] What are the main duties you need help with? [options: Childcare | Cooking | Elderly care | General housework]',
+    );
+    expect(r).toEqual({
+      body: 'What are the main duties you need help with?',
+      options: ['Childcare', 'Cooking', 'Elderly care', 'General housework'],
+    });
+  });
+
+  it('accepts the bare "[options: …]" tail without the prefix, and ignores a single or empty list', () => {
+    expect(extractChoicesFromText('Live-in or live-out? [options: Live-in | Live-out]')).toEqual({
+      body: 'Live-in or live-out?',
+      options: ['Live-in', 'Live-out'],
+    });
+    expect(extractChoicesFromText('Anything else? [options: No]')).toBeNull();
+    expect(extractChoicesFromText('[you sent tappable options via reply_with_choices] [options: A | B]')).toBeNull();
+  });
+});
+
 describe('extractChoicesFromText — prose option lists', () => {
   it('extracts the exact production failure: "Options include A, B, C, or D."', () => {
     const r = extractChoicesFromText(
