@@ -42,6 +42,7 @@ export interface OutreachParams {
   name?: string | null;
   email?: string | null;
   templateName?: string | null;
+  /** Meta language code; when omitted, the catalog's approved entry decides. */
   templateLanguage?: string | null;
   templateParams?: string[];
   /** Free text — only valid inside an open customer-service window. */
@@ -76,6 +77,36 @@ export async function sendOutreach(params: OutreachParams): Promise<OutreachResu
     throw new OutreachError("template_name or text is required", 400);
   }
   const db = supabaseAdmin();
+
+  // A template must exist and be approved in the synced catalog; its
+  // language is taken from there when the caller did not say — a name sent
+  // with the wrong code is a Meta error nobody can read on the other side.
+  let language = templateLanguage || null;
+  if (templateName) {
+    const { data: rows, error: tplError } = await db
+      .from("message_templates")
+      .select("language, status")
+      .eq("user_id", userId)
+      .eq("name", templateName);
+    if (tplError) {
+      throw new OutreachError(`template lookup failed: ${tplError.message}`, 500);
+    }
+    const catalog = (rows ?? []) as Array<{ language: string; status: string }>;
+    const approved = catalog.filter((t) => t.status === "approved");
+    if (!approved.length) {
+      throw new OutreachError(
+        catalog.length
+          ? `template "${templateName}" is not approved yet`
+          : `template "${templateName}" is not in the catalog — sync templates from Meta`,
+        422,
+      );
+    }
+    if (!language) {
+      language = approved.find((t) => t.language.toLowerCase().startsWith("en"))?.language ?? approved[0].language;
+    } else if (!approved.some((t) => t.language === language)) {
+      throw new OutreachError(`template "${templateName}" has no approved ${language} version`, 422);
+    }
+  }
 
   // The contact, matched the way the webhook matches (trunk-prefix tolerant).
   const { data: contacts, error: contactsError } = await db
@@ -156,7 +187,7 @@ export async function sendOutreach(params: OutreachParams): Promise<OutreachResu
       messageType: templateName ? "template" : "text",
       contentText: templateName ? null : (text || "").trim(),
       templateName: templateName || null,
-      templateLanguage: templateLanguage || null,
+      templateLanguage: language,
       templateParams: templateParams || [],
       pauseAi: false,
     });

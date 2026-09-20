@@ -7,6 +7,7 @@ const h = vi.hoisted(() => {
     contacts: [] as Array<{ id: string; user_id: string; phone: string; name: string | null; email?: string | null }>,
     conversations: [] as Array<{ id: string; user_id: string; contact_id: string; channel: string }>,
     messages: [] as Array<{ id: string; conversation_id: string; sender_type: string }>,
+    templates: [] as Array<{ user_id: string; name: string; language: string; status: string }>,
     inserted: [] as Array<{ table: string; row: Record<string, unknown> }>,
     send: vi.fn(),
   };
@@ -62,6 +63,15 @@ vi.mock("@/lib/flows/admin-client", () => ({
           }),
         };
       }
+      if (table === "message_templates") {
+        return {
+          select: () => ({
+            eq: (_k: string, uid: string) => ({
+              eq: async (_k2: string, name: string) => ({ data: s.templates.filter((t) => t.user_id === uid && t.name === name) }),
+            }),
+          }),
+        };
+      }
       throw new Error(`unexpected table ${table}`);
     },
   }),
@@ -80,6 +90,10 @@ beforeEach(() => {
   h.state.conversations.length = 0;
   h.state.messages.length = 0;
   h.state.inserted.length = 0;
+  h.state.templates.length = 0;
+  h.state.templates.push({ user_id: "owner-1", name: "ad_reply", language: "en_US", status: "approved" });
+  h.state.templates.push({ user_id: "owner-1", name: "ad_reply", language: "ar", status: "approved" });
+  h.state.templates.push({ user_id: "owner-1", name: "ad_reply_v2", language: "en_US", status: "pending" });
   h.state.send.mockReset();
   h.state.send.mockResolvedValue({ crmMessageId: "m-1", waMessageId: "wa-1" });
 });
@@ -155,6 +169,25 @@ describe("sendOutreach", () => {
     expect(h.state.send).toHaveBeenCalledWith(expect.objectContaining({ messageType: "text", contentText: "Following up" }));
   });
 
+  it("takes the template's language from the catalog and refuses one that is not approved", async () => {
+    await sendOutreach({ userId: "owner-1", phone: "+971501234567", templateName: "ad_reply" });
+    expect(h.state.send).toHaveBeenLastCalledWith(expect.objectContaining({ templateLanguage: "en_US" }));
+    await sendOutreach({ userId: "owner-1", phone: "+971501234568", templateName: "ad_reply", templateLanguage: "ar" });
+    expect(h.state.send).toHaveBeenLastCalledWith(expect.objectContaining({ templateLanguage: "ar" }));
+    await expect(sendOutreach({ userId: "owner-1", phone: "+971501234569", templateName: "ad_reply", templateLanguage: "fr" })).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("no approved fr version"),
+    });
+    await expect(sendOutreach({ userId: "owner-1", phone: "+971501234569", templateName: "ad_reply_v2" })).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("not approved yet"),
+    });
+    await expect(sendOutreach({ userId: "owner-1", phone: "+971501234569", templateName: "nope" })).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("not in the catalog"),
+    });
+  });
+
   it("validates the phone and demands a template or text", async () => {
     await expect(sendOutreach({ userId: "owner-1", phone: "12", templateName: "x" })).rejects.toBeInstanceOf(OutreachError);
     await expect(sendOutreach({ userId: "owner-1", phone: "+971501234567" })).rejects.toMatchObject({ status: 400 });
@@ -163,7 +196,7 @@ describe("sendOutreach", () => {
 
   it("carries a Meta refusal through as an OutreachError with its status", async () => {
     h.state.send.mockRejectedValue(new SendError("Meta API error: template not found", 502));
-    await expect(sendOutreach({ userId: "owner-1", phone: "+971501234567", templateName: "missing" })).rejects.toMatchObject({
+    await expect(sendOutreach({ userId: "owner-1", phone: "+971501234567", templateName: "ad_reply" })).rejects.toMatchObject({
       status: 502,
       message: expect.stringContaining("template not found"),
     });
