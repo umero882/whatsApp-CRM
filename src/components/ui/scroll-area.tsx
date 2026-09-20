@@ -10,10 +10,14 @@ function ScrollArea({
   children,
   ...props
 }: ScrollAreaPrimitive.Root.Props) {
+  // min-h-0: callers mount this as a `flex-1` child of a flex column. A
+  // flex item's default min-height is `auto` (= its content height), so
+  // without this the root grows to fit every row and the viewport never
+  // overflows: the list looks fine but cannot scroll.
   return (
     <ScrollAreaPrimitive.Root
       data-slot="scroll-area"
-      className={cn("relative", className)}
+      className={cn("relative min-h-0", className)}
       {...props}
     >
       <ScrollAreaPrimitive.Viewport
