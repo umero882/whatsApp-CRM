@@ -550,10 +550,14 @@ export function InboxView({ basePath = "/inbox", lockChannel }: InboxViewProps) 
         {/* Center panel: Message thread.
             Hidden on mobile when no conversation is selected so the
             list can occupy the full width. Always visible on lg+
-            (shows its own empty-state if no thread is picked yet). */}
+            (shows its own empty-state if no thread is picked yet).
+            min-w-0: a flex item's min-width defaults to its content, so
+            without it any wide message content (or the header's controls
+            on a narrow window) widens the panel past the viewport instead
+            of being contained. */}
         <div
           className={cn(
-            "flex h-full flex-1 lg:flex",
+            "flex h-full min-w-0 flex-1 lg:flex",
             hasActiveConv ? "flex" : "hidden lg:flex",
           )}
         >
