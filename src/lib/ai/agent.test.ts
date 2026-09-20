@@ -472,3 +472,24 @@ describe('INTENT_GUIDANCE — contact and the video interview happen in the app 
     expect(OUTREACH_GUIDANCE).toMatch(/Contact/);
   });
 });
+
+describe('sponsor qualification across the GCC (2026-09-20: Saudi families are prospects now)', () => {
+  it('a Riyadh sponsor with criteria reaches RECOMMENDATION like a Dubai one', () => {
+    const history = [
+      ourTemplate('Hello, we saw your ad for household help in Riyadh.'),
+      customer('Yes, send profiles'),
+      { ...ourTemplate('Where are you, and what help do you need?'), content_type: 'text' } as HistoryRow,
+      customer('We are in Riyadh'),
+    ];
+    expect(detectStage(history, 'sponsor')).toBe('RECOMMENDATION');
+    const dammam = [...history.slice(0, 3), customer('Dammam')];
+    expect(detectStage(dammam, 'sponsor')).toBe('RECOMMENDATION');
+    const nowhere = [...history.slice(0, 3), customer('We have two kids')];
+    expect(detectStage(nowhere, 'sponsor')).toBe('QUALIFICATION');
+  });
+
+  it('the guidance passes the country to search_maids and does not assume the UAE', () => {
+    expect(INTENT_GUIDANCE.sponsor).toMatch(/search_maids[^\n]*country/);
+    expect(INTENT_GUIDANCE.sponsor).toMatch(/country and city/i);
+  });
+});

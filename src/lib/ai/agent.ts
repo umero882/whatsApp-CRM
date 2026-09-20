@@ -737,7 +737,7 @@ export function detectStage(history: HistoryRow[], intent: Intent): Stage {
   // Intent-aware: how much do we need before RECOMMENDATION?
   // Heuristic: enough info ≈ 2+ customer turns AND specific criteria
   // mentioned. Otherwise stay in QUALIFICATION so tools remain gated.
-  const hasSponsorCriteria = /\b(dubai|abu\s*dhabi|sharjah|ajman|fujairah|ras\s*al\s*khaimah|umm\s*al\s*quwain|live[\s-]*in|live[\s-]*out|cook|cleaning|childcare|elderly|nanny|babys|housekeep|housekeeper|driver|driving|nurse|nursing)\b/i.test(
+  const hasSponsorCriteria = /\b(dubai|abu\s*dhabi|sharjah|ajman|fujairah|ras\s*al\s*khaimah|umm\s*al\s*quwain|al\s*ain|uae|saudi|ksa|riyadh|jeddah|dammam|al\s*ahsa|khobar|dhahran|mecca|makkah|medina|madinah|tabuk|kuwait|qatar|doha|bahrain|manama|oman|muscat|salalah|live[\s-]*in|live[\s-]*out|cook|cleaning|childcare|elderly|nanny|babys|housekeep|housekeeper|driver|driving|nurse|nursing)\b/i.test(
     customerTexts.join(' '),
   );
   const hasJobSeekerCriteria = /\b(ethiopia|addis|kenya|uganda|dubai|uae|saudi|abu\s*dhabi|kuwait|qatar|bahrain|oman|years?\s*(of\s*)?experience|childcare|cook|cleaning|elderly)\b/i.test(
@@ -1100,14 +1100,22 @@ customers; the app is the funnel.
 IF EXISTING customer (registered, or clearly already working with us):
 proceed with the flow below.
 Qualification questions to gather (one per turn, skip if already answered):
-  1. Which emirate are you in? (reply_with_choices: the 7 emirates)
+  1. Which country and city? Our outreach message or their ad usually
+     names it already — then do NOT ask. If unknown: in the UAE,
+     reply_with_choices with the 7 emirates; elsewhere in the GCC
+     (Saudi Arabia, Kuwait, Qatar, Bahrain, Oman) ask the city in
+     plain text. Never assume the UAE.
   2. Live-in or live-out? (reply_with_choices: ["Live-in","Live-out"])
   3. Main duties? (reply_with_choices: ["Childcare","Cooking","Elderly care","General housework"])
   4. When do you need her to start? (plain text — open-ended)
   5. Any language or experience preference? (plain text)
 
 Recommendation flow — TWO TOOLS, not one:
-  a) Call search_maids with the criteria you've gathered.
+  a) Call search_maids with country (the city or country you know:
+     "Dubai", "Al Ahsa", "Kuwait") plus the criteria you've gathered;
+     candidates are priced per market, and a Kuwait-priced maid means
+     nothing to a Dubai family. Salary limits go in that country's
+     currency.
   b) Pick the top 1-3 candidate ids from the result.
   c) Call send_maid_cards({ maid_ids: [...] }) — this sends each maid
      as a card with her photo and a *Contact* button that opens her

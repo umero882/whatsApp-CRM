@@ -5,11 +5,14 @@ import {
   buildAppDownloadCard,
   buildChoiceMessage,
   buildEscalationForward,
+  buildMaidCaption,
   buildMaidContactButton,
   CONTACT_CARD_FOOTER,
   ETHIOPIAN_MAIDS_TOOLS,
   maidProfileUrl,
+  resolveSponsorCountry,
   saveMatchAlert,
+  searchMaids,
   sendAppDownloadCard,
   sendMaidCards,
 } from './ethiopian-maids';
@@ -464,5 +467,108 @@ describe('sendMaidCards.handler', () => {
     const image = sent[sent.length - 1] as { type: string; image: { caption: string } };
     expect(image.type).toBe('image');
     expect(image.image.caption).toContain('https://ethiopianmaids.com/maid/m-1');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// search_maids — candidates priced for the sponsor's market (2026-09-20:
+// a Kuwait-priced maid, 120–150 KWD/mo, was shown to a Dubai family; the
+// search had no idea where the sponsor was)
+// ════════════════════════════════════════════════════════════════════
+
+describe('resolveSponsorCountry', () => {
+  it('reads a GCC country, emirate or city in any spelling', () => {
+    expect(resolveSponsorCountry('Dubai')).toEqual({ iso: 'AE', currency: 'AED', name: 'UAE' });
+    expect(resolveSponsorCountry('Al Shamkha, Abu Dhabi')).toEqual({ iso: 'AE', currency: 'AED', name: 'UAE' });
+    expect(resolveSponsorCountry('uae')).toMatchObject({ iso: 'AE' });
+    expect(resolveSponsorCountry('AE')).toMatchObject({ iso: 'AE' });
+    expect(resolveSponsorCountry('Al Ahsa')).toEqual({ iso: 'SA', currency: 'SAR', name: 'Saudi Arabia' });
+    expect(resolveSponsorCountry('Riyadh')).toMatchObject({ iso: 'SA' });
+    expect(resolveSponsorCountry('KSA')).toMatchObject({ iso: 'SA' });
+    expect(resolveSponsorCountry('Kuwait City')).toEqual({ iso: 'KW', currency: 'KWD', name: 'Kuwait' });
+    expect(resolveSponsorCountry('Doha')).toMatchObject({ iso: 'QA', currency: 'QAR' });
+    expect(resolveSponsorCountry('Manama')).toMatchObject({ iso: 'BH', currency: 'BHD' });
+    expect(resolveSponsorCountry('Muscat')).toMatchObject({ iso: 'OM', currency: 'OMR' });
+  });
+
+  it('is null for anything outside the GCC, and never matches inside another word', () => {
+    expect(resolveSponsorCountry('Paris')).toBeNull();
+    expect(resolveSponsorCountry('Romania')).toBeNull();
+    expect(resolveSponsorCountry('')).toBeNull();
+    expect(resolveSponsorCountry(undefined)).toBeNull();
+  });
+});
+
+describe('searchMaids.handler — the market filter', () => {
+  function ctxFor() {
+    return {
+      supabase: {},
+      conversationId: 'conv-1',
+      contactPhone: '+971585868560',
+      hasuraUrl: 'https://hasura.example/v1/graphql',
+      hasuraAdminSecret: null,
+      whatsapp: { phoneNumberId: 'pn-1', accessToken: 'tok-1' },
+    } as unknown as ToolContext;
+  }
+
+  function stubHasura(captured: Array<Record<string, unknown>>) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { body?: string }) => {
+        captured.push(JSON.parse(String(init.body)).variables);
+        return { ok: true, status: 200, text: async (): Promise<string> => JSON.stringify({ data: { maid_profiles_public: [] } }) };
+      }),
+    );
+  }
+
+  it('keeps only candidates priced for the sponsor\'s market (or not priced yet), beside the other criteria', async () => {
+    const captured: Array<Record<string, unknown>> = [];
+    stubHasura(captured);
+    const res = await searchMaids.handler({ country: 'Dubai', live_in_preference: true, skills: ['childcare'], max_salary: 3000 }, ctxFor()) as Record<string, unknown>;
+    expect(captured[0].where).toEqual({
+      availability_status: { _eq: 'available' },
+      is_approved: { _eq: true },
+      live_in_preference: { _eq: true },
+      preferred_salary_max: { _lte: 3000 },
+      _and: [
+        { _or: [{ preferred_currency: { _eq: 'AED' } }, { preferred_currency: { _is_null: true } }] },
+        { _or: [{ skills: { _contains: ['childcare'] } }] },
+      ],
+    });
+    expect(res.market).toEqual({ iso: 'AE', currency: 'AED', name: 'UAE' });
+  });
+
+  it('a Saudi city filters to SAR; the old max_salary_aed name still works', async () => {
+    const captured: Array<Record<string, unknown>> = [];
+    stubHasura(captured);
+    await searchMaids.handler({ country: 'Al Ahsa', max_salary_aed: 1500 }, ctxFor());
+    expect(captured[0].where).toEqual({
+      availability_status: { _eq: 'available' },
+      is_approved: { _eq: true },
+      preferred_salary_max: { _lte: 1500 },
+      _and: [{ _or: [{ preferred_currency: { _eq: 'SAR' } }, { preferred_currency: { _is_null: true } }] }],
+    });
+  });
+
+  it('no country, or one outside the GCC: no market clause, and the model is told', async () => {
+    const captured: Array<Record<string, unknown>> = [];
+    stubHasura(captured);
+    const none = await searchMaids.handler({}, ctxFor()) as Record<string, unknown>;
+    expect(captured[0].where).toEqual({ availability_status: { _eq: 'available' }, is_approved: { _eq: true } });
+    expect(none.market).toBeNull();
+    const far = await searchMaids.handler({ country: 'Paris' }, ctxFor()) as Record<string, unknown>;
+    expect(captured[1].where).toEqual({ availability_status: { _eq: 'available' }, is_approved: { _eq: true } });
+    expect(String(far.note)).toMatch(/GCC/);
+  });
+});
+
+describe('buildMaidCaption — availability', () => {
+  const base = { id: 'm', first_name: 'Roza', full_name: null, nationality: 'ET', country: null, experience_years: 2, languages: [], skills: [],
+    preferred_salary_min: null, preferred_salary_max: null, preferred_currency: null, profile_photo_url: null, live_in_preference: null };
+  it('a date already behind us reads "Available now", a future one keeps the date', () => {
+    expect(buildMaidCaption({ ...base, available_from: '2026-08-19' })).toContain('📅 Available now');
+    expect(buildMaidCaption({ ...base, available_from: '2026-08-19T00:00:00+00:00' })).toContain('📅 Available now');
+    expect(buildMaidCaption({ ...base, available_from: '2099-01-10' })).toContain('📅 Available from 2099-01-10');
+    expect(buildMaidCaption({ ...base, available_from: null })).toContain('📅 Available now');
   });
 });
