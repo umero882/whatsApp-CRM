@@ -38,7 +38,15 @@ export interface SendParams {
   mediaUrl?: string | null;
   templateName?: string | null;
   templateParams?: string[];
+  /** Meta template language code; defaults to en_US inside meta-api. */
+  templateLanguage?: string | null;
   replyToMessageId?: string | null;
+  /**
+   * A human send pauses the AI agent on the conversation (a person is
+   * driving). Outreach — a first message the AI agent should then follow
+   * up on — passes false so the reply is answered, not left waiting.
+   */
+  pauseAi?: boolean;
 }
 
 export interface SendResult {
@@ -55,7 +63,9 @@ export async function sendConversationMessage(params: SendParams): Promise<SendR
     mediaUrl,
     templateName,
     templateParams,
+    templateLanguage,
     replyToMessageId,
+    pauseAi = true,
   } = params;
 
   if (messageType === "text" && !contentText) {
@@ -152,6 +162,7 @@ export async function sendConversationMessage(params: SendParams): Promise<SendR
         accessToken,
         to: phone,
         templateName: templateName!,
+        ...(templateLanguage ? { language: templateLanguage } : {}),
         params: templateParams || [],
         contextMessageId,
       });
@@ -227,24 +238,28 @@ export async function sendConversationMessage(params: SendParams): Promise<SendR
     );
   }
 
-  // Pause the AI for this conversation — a human is now driving.
+  // Pause the AI for this conversation — a human is now driving. An
+  // outreach message (pauseAi false) is the opposite case: the AI agent
+  // should answer whoever replies, so nothing is paused.
   let aiPauseClause: { ai_paused_until: string } | Record<string, never> = {};
-  try {
-    const { data: agentCfg } = await db
-      .from("ai_agent_config")
-      .select("human_pause_minutes, is_enabled")
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (agentCfg?.is_enabled) {
-      const minutes = Math.max(0, Number(agentCfg.human_pause_minutes) || 60);
-      const until = new Date(Date.now() + minutes * 60_000).toISOString();
-      aiPauseClause = { ai_paused_until: until };
+  if (pauseAi) {
+    try {
+      const { data: agentCfg } = await db
+        .from("ai_agent_config")
+        .select("human_pause_minutes, is_enabled")
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (agentCfg?.is_enabled) {
+        const minutes = Math.max(0, Number(agentCfg.human_pause_minutes) || 60);
+        const until = new Date(Date.now() + minutes * 60_000).toISOString();
+        aiPauseClause = { ai_paused_until: until };
+      }
+    } catch (err) {
+      console.warn(
+        "[ai-agent] pause-on-human-send lookup failed:",
+        err instanceof Error ? err.message : err,
+      );
     }
-  } catch (err) {
-    console.warn(
-      "[ai-agent] pause-on-human-send lookup failed:",
-      err instanceof Error ? err.message : err,
-    );
   }
 
   await db
@@ -259,25 +274,27 @@ export async function sendConversationMessage(params: SendParams): Promise<SendR
     .eq("user_id", userId);
 
   // Pause any active Flow run for this contact — human stepped in.
-  try {
-    const { error: pauseErr } = await db
-      .from("flow_runs")
-      .update({
-        status: "paused_by_agent",
-        ended_at: new Date().toISOString(),
-        end_reason: "agent_replied",
-      })
-      .eq("user_id", userId)
-      .eq("contact_id", contact.id)
-      .eq("status", "active");
-    if (pauseErr) {
-      console.error("[flows] pause-on-agent-send failed:", pauseErr.message);
+  if (pauseAi) {
+    try {
+      const { error: pauseErr } = await db
+        .from("flow_runs")
+        .update({
+          status: "paused_by_agent",
+          ended_at: new Date().toISOString(),
+          end_reason: "agent_replied",
+        })
+        .eq("user_id", userId)
+        .eq("contact_id", contact.id)
+        .eq("status", "active");
+      if (pauseErr) {
+        console.error("[flows] pause-on-agent-send failed:", pauseErr.message);
+      }
+    } catch (err) {
+      console.error(
+        "[flows] pause-on-agent-send threw:",
+        err instanceof Error ? err.message : err,
+      );
     }
-  } catch (err) {
-    console.error(
-      "[flows] pause-on-agent-send threw:",
-      err instanceof Error ? err.message : err,
-    );
   }
 
   return { crmMessageId: messageRecord.id, waMessageId };
