@@ -300,6 +300,7 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
     escalationPhone: process.env.ESCALATION_WHATSAPP_NUMBER || DEFAULT_ESCALATION_PHONE,
     hasuraUrl: agent.hasura_url,
     hasuraAdminSecret,
+    cardLanguage: CARD_LANG[language],
     whatsapp: {
       phoneNumberId: waCfg.phone_number_id,
       accessToken,
@@ -1084,12 +1085,12 @@ export const STAGE_GUIDANCE: Record<Stage, string> = {
   RECOMMENDATION:
     'You have enough info to make a recommendation. Use the right tool for the intent (search_maids for sponsors, list_jobs for job seekers). Present 2-3 results max. Offer the next step.',
   BOOKING:
-    'Customer is engaging — interested in a candidate, asking pricing, or ready to apply. Use get_maid_profile / get_pricing for sponsors; for job seekers, take down their details and confirm next steps. Be specific and concrete.',
+    'Customer is engaging — interested in a candidate, asking pricing, or ready to apply. Use get_maid_profile / get_pricing for sponsors; contacting a candidate and the video interview happen in the app (the Contact button on her card), never from this chat. For job seekers, take down their details and confirm next steps. Be specific and concrete.',
   CLOSE:
     'Customer is wrapping up. Acknowledge briefly and warmly. Leave the door open for future contact. Do NOT call tools.',
 };
 
-const INTENT_GUIDANCE: Record<Intent, string> = {
+export const INTENT_GUIDANCE: Record<Intent, string> = {
   sponsor: `Customer is a SPONSOR seeking to HIRE a maid (family, employer, or representative).
 IF NEW (not yet registered with us): call send_app_download_card —
 registration and browsing candidates happen in the app. You may answer
@@ -1109,39 +1110,31 @@ Recommendation flow — TWO TOOLS, not one:
   a) Call search_maids with the criteria you've gathered.
   b) Pick the top 1-3 candidate ids from the result.
   c) Call send_maid_cards({ maid_ids: [...] }) — this sends each maid
-     as a photo+caption WhatsApp message (a card). DO NOT skip this
-     step; do NOT just list candidates in text.
-  d) Your FINAL text reply is ONE short sentence — "Want details on
-     any of them? Reply with the name." — NEVER repeat the candidate
-     info in text after sending cards (the customer already saw them).
+     as a card with her photo and a *Contact* button that opens her
+     profile in the Ethiopian Maids app, and follows with the app
+     download card. DO NOT skip this step; do NOT just list
+     candidates in text.
+  d) Your FINAL text reply is ONE short sentence — "Tap Contact on
+     the one you like — you register in our app, choose a package,
+     and the video interview happens there." — NEVER repeat the
+     candidate info in text after sending cards.
 
 NEVER share full names, IDs, or contact info in text. The cards
 already include first name + nationality + experience + skills +
 salary range + photo.
 
-Booking flow (when customer says "book interview for X", "I want to
-interview Grace", "schedule a call with Maria", etc.):
-  1. Look at history — the maid name they mention should be one you
-     already showed via send_maid_cards. Use that first name.
-  2. If they haven't given a specific date/time, ASK: "When works
-     for you? E.g. tomorrow 2pm, today 4pm, in 2 hours."
-  3. Once you have a time, call book_interview({
-        maid_name: "Grace",
-        preferred_datetime: "tomorrow 2pm" (or ISO format),
-        duration_minutes: 30
-     })
-     The server resolves the name to the maid's UUID. You do NOT
-     need to call get_maid_profile first.
-  4. The tool returns booking_id + meeting_url + scheduled_at. Your
-     final reply MUST include the meeting link and confirmed time,
-     plus a note that the candidate will be confirmed and reminded.
-     Example: "Done — interview with Grace booked for tomorrow at
-     2 PM. Join here: https://meet.jit.si/... — we'll confirm with
-     Grace and send a reminder before the call."
+Contact / interview / hire (when the customer says "book interview
+for X", "I want to talk to Grace", "how do I contact her", "hire
+Maria"): contacting a candidate and the video interview happen ONLY
+in the Ethiopian Maids app, for a registered sponsor on a package —
+NEVER from this chat. Do NOT offer to book, schedule, or set up a
+call, and NEVER share a number or a meeting link. Say: tap *Contact*
+on her card (call send_maid_cards for that maid again if the card is
+no longer at hand), register in the app, choose a package, and start
+the video interview there; call send_app_download_card if they have
+not received the app yet.
 
-get_maid_profile is for "tell me more about Grace" (informational),
-NOT for booking. Don't call it just to look up an id — book_interview
-does that itself.
+get_maid_profile is for "tell me more about Grace" (informational).
 
 For pricing: call get_pricing(country: "UAE").`,
 
@@ -1177,7 +1170,7 @@ Do NOT assume one side. Do NOT ask emirate/duties yet.`,
  */
 export const OUTREACH_GUIDANCE = `═══ OUTREACH — WE WROTE FIRST ═══
 This conversation was opened by US: our first message is an approved template answering the customer's OWN classifieds ad asking for household help (the ad's city is in that message). The customer is a SPONSOR — a household in the GCC that wants to hire — never a job seeker, whatever the name on the contact looks like. Reply in the LANGUAGE above (English or Arabic) — never Amharic, and never the maid-registration wording.
-• "Yes, send profiles" / YES / "send me candidates": they want to see profiles. Call send_app_download_card (language en or ar to match) and reply with ONE sentence: verified profiles with photos, experience and salary are in our app — and if they tell us live-in or live-out and when they need her to start, our team will shortlist for them. Do NOT ask "are you registered?", do NOT triage, do NOT ask a question in the same message as the card.
+• "Yes, send profiles" / YES / "send me candidates": they want to see profiles. Call send_app_download_card (language en or ar to match) and reply with ONE sentence: verified profiles with photos, experience and salary are in our app — and if they tell us live-in or live-out and when they need her to start, our team will shortlist for them. Do NOT ask "are you registered?", do NOT triage, do NOT ask a question in the same message as the card. When you do send candidates (send_maid_cards), each card carries a *Contact* button that opens her profile in the app — contact and the video interview happen there, never here.
 • "Tell us what you need" / a description of what they need: qualify — ONE question per turn, starting with live-in or live-out via reply_with_choices, then the start date. Do NOT send the card on this turn.
 • "No thanks" / "Not now" / STOP: one short thank-you and nothing else — no card, no question, no follow-up.
 • Never say we "saw their ad" again — they know; go straight to helping.`;

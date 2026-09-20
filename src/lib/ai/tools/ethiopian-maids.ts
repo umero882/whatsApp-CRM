@@ -709,6 +709,51 @@ async function sendAppCard(
   }
 }
 
+/**
+ * Send the store card(s), persist the one inbox row and bump the
+ * conversation. Null when every send failed. Shared by the tool and by
+ * send_maid_cards, which follows the candidates with the app card.
+ */
+async function deliverAppDownloadCards(
+  ctx: ToolContext,
+  language: AppCardLanguage,
+  platforms: AppCardPlatform[],
+): Promise<Array<{ platform: AppCardPlatform; messageId: string; deliveredAs: CardDelivery }> | null> {
+  if (!ctx.whatsapp) return null;
+  const to = sanitizePhoneForMeta(ctx.contactPhone);
+  const sent: Array<{ platform: AppCardPlatform; messageId: string; deliveredAs: CardDelivery }> = [];
+  for (const p of platforms) {
+    try {
+      const r = await sendAppCard(ctx.whatsapp, to, buildAppDownloadCard(language, p));
+      sent.push({ platform: p, ...r });
+    } catch (e) {
+      console.warn(`[send_app_download_card] ${p} card could not be delivered:`,
+        e instanceof Error ? e.message : e);
+    }
+  }
+  if (sent.length === 0) return null;
+
+  // One summary row + conversation bump; message_id is the last card sent.
+  await ctx.supabase.from('messages').insert({
+    conversation_id: ctx.conversationId,
+    sender_type: 'agent',
+    agent_kind: 'ai',
+    content_type: 'text',
+    content_text: '[Official app download card]',
+    message_id: sent[sent.length - 1].messageId,
+    status: 'sent',
+  });
+  await ctx.supabase
+    .from('conversations')
+    .update({
+      last_message_text: '[App download card]',
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', ctx.conversationId);
+  return sent;
+}
+
 export const sendAppDownloadCard: ToolHandler = {
   name: 'send_app_download_card',
   description:
@@ -751,41 +796,11 @@ export const sendAppDownloadCard: ToolHandler = {
       ? String(args.platform)
       : null) as AppCardPlatform | null;
     const platforms: AppCardPlatform[] = explicit ? [explicit] : ['android', 'ios'];
-    const to = sanitizePhoneForMeta(ctx.contactPhone);
 
-    const sent: Array<{ platform: AppCardPlatform; messageId: string; deliveredAs: CardDelivery }> = [];
-    for (const p of platforms) {
-      try {
-        const r = await sendAppCard(ctx.whatsapp, to, buildAppDownloadCard(language, p));
-        sent.push({ platform: p, ...r });
-      } catch (e) {
-        console.warn(`[send_app_download_card] ${p} card could not be delivered:`,
-          e instanceof Error ? e.message : e);
-      }
-    }
-
-    if (sent.length === 0) {
+    const sent = await deliverAppDownloadCards(ctx, language, platforms);
+    if (!sent) {
       return { error: 'Could not deliver the app download card(s) — every send attempt failed.' };
     }
-
-    // One summary row + conversation bump; message_id is the last card sent.
-    await ctx.supabase.from('messages').insert({
-      conversation_id: ctx.conversationId,
-      sender_type: 'agent',
-      agent_kind: 'ai',
-      content_type: 'text',
-      content_text: '[Official app download card]',
-      message_id: sent[sent.length - 1].messageId,
-      status: 'sent',
-    });
-    await ctx.supabase
-      .from('conversations')
-      .update({
-        last_message_text: '[App download card]',
-        last_message_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', ctx.conversationId);
 
     const both = sent.length > 1;
     const storeName = sent[0].platform === 'ios' ? 'App Store' : 'Google Play';
@@ -869,13 +884,110 @@ function buildMaidCaption(m: MaidCardRow): string {
   return lines.join('\n');
 }
 
+/**
+ * Where a card's Contact button goes: the maid's own page in the web app
+ * (`/maid/:id`, verified in the site bundle 2026-09-20). The mobile app has
+ * the same screen (app/maid/[id].tsx) and shares this very link, so once
+ * its universal-link filter covers /maid/* the tap opens the installed app
+ * on her profile; until then it is the web app, where the family registers,
+ * picks a package and starts the video interview.
+ */
+export function maidProfileUrl(maidId: string): string {
+  return `https://ethiopianmaids.com/maid/${encodeURIComponent(maidId)}`;
+}
+
+/** Meta caps a cta_url button label at 20 characters. */
+export function buildMaidContactButton(firstName: string): string {
+  const label = `Contact ${firstName.trim()}`;
+  return firstName.trim() && label.length <= 20 ? label : 'Contact her';
+}
+
+/** The grey line under every candidate card (Meta: ≤ 60 characters). */
+export const CONTACT_CARD_FOOTER = 'Register in our app, pick a package, video-call her there';
+
+type MaidCardDelivery = 'card' | 'card_no_image' | 'image' | 'text';
+
+/**
+ * One candidate as a CTA card: her photo as the header, the caption as the
+ * body, one button that opens her profile. Degrades the way the app card
+ * does — without the header when Meta cannot fetch the photo, then the
+ * plain photo + caption (the link written into the caption), then text.
+ */
+async function sendMaidCard(
+  whatsapp: NonNullable<ToolContext['whatsapp']>,
+  to: string,
+  m: MaidCardRow,
+  caption: string,
+): Promise<{ messageId: string; deliveredAs: MaidCardDelivery }> {
+  const name = (m.first_name || m.full_name || '').trim().split(/\s+/)[0] ?? '';
+  const url = maidProfileUrl(m.id);
+  const base = {
+    phoneNumberId: whatsapp.phoneNumberId,
+    accessToken: whatsapp.accessToken,
+    to,
+    bodyText: caption,
+    buttonText: buildMaidContactButton(name),
+    url,
+    footerText: CONTACT_CARD_FOOTER,
+  };
+  if (m.profile_photo_url) {
+    try {
+      const r = await sendCtaUrlMessage({ ...base, headerImageUrl: m.profile_photo_url });
+      return { messageId: r.messageId, deliveredAs: 'card' };
+    } catch (e) {
+      console.warn('[send_maid_cards] cta_url with photo failed, retrying without:', e instanceof Error ? e.message : e);
+    }
+  }
+  try {
+    const r = await sendCtaUrlMessage(base);
+    return { messageId: r.messageId, deliveredAs: 'card_no_image' };
+  } catch (e) {
+    console.warn('[send_maid_cards] cta_url failed, falling back:', e instanceof Error ? e.message : e);
+  }
+  const withLink = `${caption}\n👉 ${base.buttonText}: ${url}`;
+  if (m.profile_photo_url) {
+    const r = await sendImageMessage({
+      phoneNumberId: whatsapp.phoneNumberId,
+      accessToken: whatsapp.accessToken,
+      to,
+      imageUrl: m.profile_photo_url,
+      caption: withLink,
+    });
+    return { messageId: r.messageId, deliveredAs: 'image' };
+  }
+  const r = await sendTextMessage({
+    phoneNumberId: whatsapp.phoneNumberId,
+    accessToken: whatsapp.accessToken,
+    to,
+    text: withLink,
+  });
+  return { messageId: r.messageId, deliveredAs: 'text' };
+}
+
+/** Has the official app card been delivered in this conversation before? */
+async function appCardAlreadySent(ctx: ToolContext): Promise<boolean> {
+  const { data, error } = await ctx.supabase
+    .from('messages')
+    .select('id')
+    .eq('conversation_id', ctx.conversationId)
+    .eq('sender_type', 'agent')
+    .ilike('content_text', '%app download card%')
+    .limit(1);
+  if (error) {
+    console.warn('[send_maid_cards] could not check for an earlier app card:', error.message);
+    return false;
+  }
+  return (data ?? []).length > 0;
+}
+
 export const sendMaidCards: ToolHandler = {
   name: 'send_maid_cards',
   description:
-    'Render 1–3 maid candidates as image+caption WhatsApp messages (cards), one per candidate. ' +
+    'Render 1–3 maid candidates as WhatsApp cards, one per candidate: her photo, the details, and a Contact button that opens her profile in the Ethiopian Maids app — contact and the video interview happen there, for a registered sponsor on a package, never in this chat. ' +
+    'The official app download card follows the candidates (once per conversation). ' +
     'ALWAYS call this when presenting candidates to the customer — do NOT also list them in plain text. ' +
     'Each card shows the maid\'s photo, name, nationality, experience, top skills, languages, salary range, live-in preference, and availability. ' +
-    'After this tool succeeds, your final text reply should be a short question like "Want details on any of them? Reply with the name." — DO NOT repeat the candidate details in your text.',
+    'After this tool succeeds, your final text reply is ONE short sentence — "Tap Contact on the one you like; register in our app, choose a package, and the video interview happens there." — DO NOT repeat the candidate details in your text and do NOT offer to book anything.',
   parameters: {
     type: 'object',
     properties: {
@@ -916,35 +1028,27 @@ export const sendMaidCards: ToolHandler = {
       .filter((r): r is MaidCardRow => Boolean(r));
 
     const to = sanitizePhoneForMeta(ctx.contactPhone);
-    const sent: Array<{ maid_id: string; ok: boolean; reason?: string }> = [];
+    const sent: Array<{ maid_id: string; ok: boolean; delivered_as?: MaidCardDelivery; reason?: string }> = [];
 
     for (const m of ordered) {
       const caption = buildMaidCaption(m);
-      if (!m.profile_photo_url) {
-        // Fall back to text-only persist + skip Meta image send. Tell
-        // the model so it can decide whether to mention the gap.
-        sent.push({ maid_id: m.id, ok: false, reason: 'no_photo' });
-        continue;
-      }
       try {
-        const r = await sendImageMessage({
-          phoneNumberId: ctx.whatsapp.phoneNumberId,
-          accessToken: ctx.whatsapp.accessToken,
-          to,
-          imageUrl: m.profile_photo_url,
-          caption,
-        });
+        const r = await sendMaidCard(ctx.whatsapp, to, m, caption);
+        const name = (m.first_name || m.full_name || '').trim().split(/\s+/)[0] ?? '';
+        // The inbox row: the photo where there is one, the caption, and
+        // where the button goes — a person reading the thread sees the same
+        // link the customer can tap.
         await ctx.supabase.from('messages').insert({
           conversation_id: ctx.conversationId,
           sender_type: 'agent',
           agent_kind: 'ai',
-          content_type: 'image',
-          content_text: caption,
-          media_url: m.profile_photo_url,
+          content_type: m.profile_photo_url ? 'image' : 'text',
+          content_text: `${caption}\n👉 ${buildMaidContactButton(name)} → ${maidProfileUrl(m.id)}`,
+          media_url: m.profile_photo_url || null,
           message_id: r.messageId,
           status: 'sent',
         });
-        sent.push({ maid_id: m.id, ok: true });
+        sent.push({ maid_id: m.id, ok: true, delivered_as: r.deliveredAs });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.warn('[send_maid_cards] send failed for', m.id, msg);
@@ -952,25 +1056,42 @@ export const sendMaidCards: ToolHandler = {
       }
     }
 
+    const delivered = sent.filter((s) => s.ok).length;
+
     // Bump the conversation timestamp so the inbox sorts correctly.
-    if (sent.some((s) => s.ok)) {
+    if (delivered) {
       await ctx.supabase
         .from('conversations')
         .update({
-          last_message_text: `[${sent.filter((s) => s.ok).length} candidate photo(s)]`,
+          last_message_text: `[${delivered} candidate card(s)]`,
           last_message_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
         .eq('id', ctx.conversationId);
     }
 
+    // The app download card follows the candidates, once: the Contact
+    // button leads into the app, so the family has the store card at hand.
+    let appCard: 'sent' | 'already_sent' | 'failed' | 'skipped' = 'skipped';
+    if (delivered) {
+      if (await appCardAlreadySent(ctx)) {
+        appCard = 'already_sent';
+      } else {
+        const r = await deliverAppDownloadCards(ctx, ctx.cardLanguage ?? 'en', ['android', 'ios']);
+        appCard = r ? 'sent' : 'failed';
+      }
+    }
+
     return {
       sent,
-      success_count: sent.filter((s) => s.ok).length,
+      success_count: delivered,
+      app_card: appCard,
       note:
-        'Cards are now in the customer\'s WhatsApp. Your follow-up TEXT reply should be ONE short sentence ' +
-        'inviting the next step (e.g. "Want details on any of them? Reply with the name"). ' +
-        'Do NOT re-list the candidates in text — they already saw the cards.',
+        'Cards are now in the customer\'s WhatsApp, each with a Contact button that opens her profile in the app' +
+        (appCard === 'sent' ? ', and the official app download cards followed' : '') +
+        '. Your follow-up TEXT reply is ONE short sentence: tap Contact on the one they like — they register in our app, ' +
+        'choose a package, and the video interview happens there. ' +
+        'Do NOT re-list the candidates in text, do NOT paste a link, and do NOT offer to book or schedule anything.',
     };
   },
 };
@@ -1660,12 +1781,15 @@ export const saveMatchAlert: ToolHandler = {
   },
 };
 
+// bookInterview is deliberately absent (2026-09-20): a video interview is
+// an app entitlement — a registered sponsor on a package starts it from the
+// candidate's profile there. Booking one from chat bypassed that. The
+// handler stays for the ops tooling that may still call it directly.
 export const ETHIOPIAN_MAIDS_TOOLS: ToolHandler[] = [
   searchMaids,
   getMaidProfile,
   sendMaidCards,
   sendAppDownloadCard,
-  bookInterview,
   listJobs,
   getPricing,
   saveMatchAlert,
