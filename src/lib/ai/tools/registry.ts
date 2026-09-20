@@ -32,6 +32,12 @@ export interface ToolContext {
   hasuraUrl: string | null;
   hasuraAdminSecret: string | null;
   /**
+   * The conversation's language as an app-card code ('en' | 'ar' | 'am'),
+   * for tools that send a card on their own (send_maid_cards follows the
+   * candidates with the app download card). Populated by agent.ts.
+   */
+  cardLanguage?: 'en' | 'ar' | 'am';
+  /**
    * Credentials needed by render-side tools (e.g. send_maid_cards) so
    * they can post directly to Meta API without re-fetching the user's
    * whatsapp_config row. Populated by agent.ts when it builds the

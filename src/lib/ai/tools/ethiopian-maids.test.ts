@@ -5,8 +5,13 @@ import {
   buildAppDownloadCard,
   buildChoiceMessage,
   buildEscalationForward,
+  buildMaidContactButton,
+  CONTACT_CARD_FOOTER,
+  ETHIOPIAN_MAIDS_TOOLS,
+  maidProfileUrl,
   saveMatchAlert,
   sendAppDownloadCard,
+  sendMaidCards,
 } from './ethiopian-maids';
 import { formatKbPassages } from './knowledge-base';
 import type { ToolContext } from './registry';
@@ -16,13 +21,22 @@ import type { ToolContext } from './registry';
  * .eq filters; both chains are awaitable and resolve { error: null }.
  * Shared across suites that need a stand-in `ctx.supabase`.
  */
-function mockSupabase() {
+function mockSupabase(selectRows: Array<Record<string, unknown>> = []) {
   const ops: Array<{ table: string; kind: 'update' | 'insert'; payload: unknown; eqs: Array<[string, unknown]> }> = [];
   return {
     ops,
     client: {
       from(table: string) {
         return {
+          select() {
+            const chain = {
+              eq() { return chain; },
+              ilike() { return chain; },
+              limit() { return chain; },
+              then(resolve: (r: { data: Array<Record<string, unknown>>; error: null }) => void) { resolve({ data: selectRows, error: null }); },
+            };
+            return chain;
+          },
           update(payload: unknown) {
             const rec = { table, kind: 'update' as const, payload, eqs: [] as Array<[string, unknown]> };
             ops.push(rec);
@@ -325,5 +339,130 @@ describe('sendAppDownloadCard.handler', () => {
     const payload = JSON.stringify(sent);
     expect(payload).toContain(APP_PLAY_STORE_URL);
     expect(payload).toContain(APP_APP_STORE_URL);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// send_maid_cards — a Contact button on every card, the app card after
+// (2026-09-20: contact and the video interview happen in the app, for a
+// registered sponsor on a package — never from WhatsApp)
+// ════════════════════════════════════════════════════════════════════
+
+describe('maid card contact pieces', () => {
+  it('links to the maid\'s own profile page — the route the mobile app shares and can open', () => {
+    expect(maidProfileUrl('abc-123')).toBe('https://ethiopianmaids.com/maid/abc-123');
+    expect(maidProfileUrl('a b')).toBe('https://ethiopianmaids.com/maid/a%20b');
+  });
+
+  it('keeps the button label inside Meta\'s 20 characters', () => {
+    expect(buildMaidContactButton('Roza')).toBe('Contact Roza');
+    expect(buildMaidContactButton('Nakyejjwe Justine')).toBe('Contact her');
+    expect(buildMaidContactButton('')).toBe('Contact her');
+    expect(CONTACT_CARD_FOOTER.length).toBeLessThanOrEqual(60);
+  });
+
+  it('book_interview is no longer a WhatsApp agent tool', () => {
+    expect(ETHIOPIAN_MAIDS_TOOLS.map((t) => t.name)).not.toContain('book_interview');
+    expect(ETHIOPIAN_MAIDS_TOOLS.map((t) => t.name)).toContain('send_maid_cards');
+  });
+});
+
+describe('sendMaidCards.handler', () => {
+  const ROWS = [
+    { id: 'm-1', first_name: 'Roza', full_name: 'Roza Keder', nationality: 'ET', country: 'AE', experience_years: 5,
+      languages: ['english', 'amharic'], skills: ['cleaning', 'childcare'], preferred_salary_min: 3000, preferred_salary_max: 3750,
+      preferred_currency: 'AED', profile_photo_url: 'https://img.example/roza.jpg', available_from: null, live_in_preference: true },
+    { id: 'm-2', first_name: 'Haweni', full_name: null, nationality: 'ET', country: null, experience_years: 0,
+      languages: ['amharic'], skills: ['cooking'], preferred_salary_min: null, preferred_salary_max: null,
+      preferred_currency: null, profile_photo_url: null, available_from: '2026-08-19', live_in_preference: null },
+  ];
+
+  function ctxFor(supabase: unknown) {
+    return {
+      supabase,
+      conversationId: 'conv-1',
+      contactPhone: '+971585868560',
+      hasuraUrl: 'https://hasura.example/v1/graphql',
+      hasuraAdminSecret: null,
+      cardLanguage: 'en',
+      whatsapp: { phoneNumberId: 'pn-1', accessToken: 'tok-1' },
+    } as unknown as ToolContext;
+  }
+
+  /** Hasura answers with the rows; Meta records every payload. `refuse` makes Meta reject a payload shape. */
+  function stubFetch(sent: Array<Record<string, unknown>>, refuse?: (payload: Record<string, unknown>) => boolean) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: { body?: string }) => {
+        if (String(url).includes('hasura.example')) {
+          return { ok: true, status: 200, text: async (): Promise<string> => JSON.stringify({ data: { maid_profiles_public: ROWS } }) };
+        }
+        const payload = JSON.parse(String(init.body));
+        if (refuse && refuse(payload)) {
+          return { ok: false, status: 400, json: async () => ({ error: { message: 'refused' } }), text: async (): Promise<string> => 'refused' };
+        }
+        sent.push(payload);
+        return { ok: true, status: 200, json: async () => ({ messages: [{ id: `wamid.${sent.length}` }] }), text: async (): Promise<string> => '' };
+      }),
+    );
+  }
+
+  it('sends each maid as a CTA card — photo header when there is one, Contact button to her profile — then the app cards once', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    stubFetch(sent);
+    const supa = mockSupabase();
+    const res = await sendMaidCards.handler({ maid_ids: ['m-1', 'm-2'] }, ctxFor(supa.client)) as Record<string, unknown>;
+
+    expect(res.success_count).toBe(2);
+    expect(res.sent).toEqual([{ maid_id: 'm-1', ok: true, delivered_as: 'card' }, { maid_id: 'm-2', ok: true, delivered_as: 'card_no_image' }]);
+    expect(res.app_card).toBe('sent');
+    expect(String(res.note)).toMatch(/Contact/);
+    expect(String(res.note)).toMatch(/do NOT offer to book/);
+
+    const cards = sent.filter((p) => (p.interactive as { type: string } | undefined)?.type === 'cta_url');
+    expect(cards).toHaveLength(4); // two maids + Google Play + App Store
+    const roza = cards[0].interactive as { header?: unknown; body: { text: string }; footer: { text: string }; action: { parameters: { display_text: string; url: string } } };
+    expect(roza.header).toEqual({ type: 'image', image: { link: 'https://img.example/roza.jpg' } });
+    expect(roza.body.text).toContain('*Roza* — ET');
+    expect(roza.body.text).toContain('3,000–3,750 AED/mo · Live-in');
+    expect(roza.footer.text).toBe(CONTACT_CARD_FOOTER);
+    expect(roza.action.parameters).toEqual({ display_text: 'Contact Roza', url: 'https://ethiopianmaids.com/maid/m-1' });
+    const haweni = cards[1].interactive as { header?: unknown; action: { parameters: { display_text: string; url: string } } };
+    expect(haweni.header).toBeUndefined();
+    expect(haweni.action.parameters).toEqual({ display_text: 'Contact Haweni', url: 'https://ethiopianmaids.com/maid/m-2' });
+    expect(JSON.stringify(cards.slice(2))).toContain(APP_PLAY_STORE_URL);
+    expect(JSON.stringify(cards.slice(2))).toContain(APP_APP_STORE_URL);
+
+    // The inbox sees the photo card as an image with the caption and where the button goes; the app card as its usual row.
+    const inserts = supa.ops.filter((o) => o.kind === 'insert' && o.table === 'messages').map((o) => o.payload as Record<string, unknown>);
+    expect(inserts).toHaveLength(3);
+    expect(inserts[0]).toMatchObject({ content_type: 'image', media_url: 'https://img.example/roza.jpg', message_id: 'wamid.1' });
+    expect(String(inserts[0].content_text)).toContain('Contact Roza → https://ethiopianmaids.com/maid/m-1');
+    expect(inserts[1]).toMatchObject({ content_type: 'text', message_id: 'wamid.2' });
+    expect(inserts[2]).toMatchObject({ content_text: '[Official app download card]' });
+  });
+
+  it('does not send the app card again when the conversation already has one', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    stubFetch(sent);
+    const supa = mockSupabase([{ id: 'msg-old' }]);
+    const res = await sendMaidCards.handler({ maid_ids: ['m-1'] }, ctxFor(supa.client)) as Record<string, unknown>;
+    expect(res.app_card).toBe('already_sent');
+    expect(sent.filter((p) => (p.interactive as { type: string } | undefined)?.type === 'cta_url')).toHaveLength(1);
+  });
+
+  it('falls back to the photo + caption when Meta refuses the CTA form, and still reports the link', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    stubFetch(sent, (p) => (p.interactive as { type?: string } | undefined)?.type === 'cta_url' && !!(p.interactive as { header?: unknown }).header && String(JSON.stringify(p)).includes('/maid/'));
+    const supa = mockSupabase([{ id: 'msg-old' }]);
+    const res = await sendMaidCards.handler({ maid_ids: ['m-1'] }, ctxFor(supa.client)) as Record<string, unknown>;
+    expect(res.sent).toEqual([{ maid_id: 'm-1', ok: true, delivered_as: 'card_no_image' }]);
+    // Even the imageless CTA refused → the plain photo goes, caption carrying the link.
+    stubFetch(sent, (p) => (p.interactive as { type?: string } | undefined)?.type === 'cta_url');
+    const again = await sendMaidCards.handler({ maid_ids: ['m-1'] }, ctxFor(supa.client)) as Record<string, unknown>;
+    expect(again.sent).toEqual([{ maid_id: 'm-1', ok: true, delivered_as: 'image' }]);
+    const image = sent[sent.length - 1] as { type: string; image: { caption: string } };
+    expect(image.type).toBe('image');
+    expect(image.image.caption).toContain('https://ethiopianmaids.com/maid/m-1');
   });
 });

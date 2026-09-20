@@ -13,6 +13,7 @@ import {
   startedByUs,
   OUTREACH_GUIDANCE,
   guardSponsorScript,
+  INTENT_GUIDANCE,
 } from './agent';
 
 describe('stripCardNarration', () => {
@@ -459,5 +460,15 @@ describe('guardSponsorScript — a sponsor never gets an Amharic reply', () => {
     expect(guardSponsorScript(am, { intent: 'sponsor', language: 'Amharic', stage: 'QUALIFICATION', cardSent: false })).toBe(am);
     const ok = 'Tap the button above to browse verified profiles 🌸';
     expect(guardSponsorScript(ok, { intent: 'sponsor', language: 'English', stage: 'QUALIFICATION', cardSent: true })).toBe(ok);
+  });
+});
+
+describe('INTENT_GUIDANCE — contact and the video interview happen in the app (2026-09-20)', () => {
+  it('the sponsor flow points at the Contact button and never books from chat', () => {
+    expect(INTENT_GUIDANCE.sponsor).toMatch(/Contact/);
+    expect(INTENT_GUIDANCE.sponsor).toMatch(/video/i);
+    expect(INTENT_GUIDANCE.sponsor).not.toMatch(/book_interview/);
+    expect(STAGE_GUIDANCE.BOOKING).not.toMatch(/book_interview/);
+    expect(OUTREACH_GUIDANCE).toMatch(/Contact/);
   });
 });
