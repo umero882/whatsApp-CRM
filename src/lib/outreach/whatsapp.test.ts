@@ -149,13 +149,13 @@ describe("sendOutreach", () => {
       waMessageId: "wa-1",
       contactCreated: true,
       conversationCreated: true,
-      tags: [],
+      tags: ["UAE"],  // the market, read from the template's city
     });
     expect(h.state.inserted[0]).toEqual({
       table: "contacts",
       row: { user_id: "owner-1", phone: "+971501234567", name: "Family in Al Shamkha" },
     });
-    expect(h.state.inserted[1]).toEqual({
+    expect(h.state.inserted.find((i) => i.table === "conversations")).toEqual({
       table: "conversations",
       row: { user_id: "owner-1", contact_id: "ct-1", channel: "whatsapp" },
     });
@@ -183,14 +183,16 @@ describe("sendOutreach", () => {
       templateParams: ["Al Shamkha"],
       intent: "sponsor",
       tags: ["Prospect", "Mourjan"],
+      country: "United Arab Emirates",
     });
-    expect(result.tags).toEqual(["Sponsor", "prospect", "Mourjan"]);
-    // "Prospect" matched the existing tag regardless of case; the other two were created.
-    expect(h.state.tags.map((t) => t.name)).toEqual(["prospect", "Sponsor", "Mourjan"]);
+    expect(result.tags).toEqual(["Sponsor", "UAE", "prospect", "Mourjan"]);
+    // "Prospect" matched the existing tag regardless of case; the other three were created.
+    expect(h.state.tags.map((t) => t.name)).toEqual(["prospect", "Sponsor", "UAE", "Mourjan"]);
     expect(h.state.contactTags).toEqual([
       { contact_id: "ct-1", tag_id: "tag-2" },
-      { contact_id: "ct-1", tag_id: "tag-old" },
       { contact_id: "ct-1", tag_id: "tag-3" },
+      { contact_id: "ct-1", tag_id: "tag-old" },
+      { contact_id: "ct-1", tag_id: "tag-4" },
     ]);
     // Tagging happened before the send so a tagging fault never leaves a half-done contact.
     const order = h.state.inserted.map((i) => i.table);
@@ -203,6 +205,17 @@ describe("sendOutreach", () => {
     const before = h.state.contactTags.length;
     await sendOutreach({ userId: "owner-1", phone: "+971501234569", templateName: "ad_reply" });
     expect(h.state.contactTags.length).toBe(before);
+  });
+
+  it("reads the market from the caller's country, else the ad's city, else the name — or none", async () => {
+    const one = await sendOutreach({ userId: "owner-1", phone: "+966501234567", templateName: "ad_reply", templateParams: ["Al Ahsa"], country: "Riyadh" });
+    expect(one.tags).toEqual(["Saudi Arabia"]);
+    const two = await sendOutreach({ userId: "owner-1", phone: "+966501234568", templateName: "ad_reply", templateParams: ["Al Ahsa"] });
+    expect(two.tags).toEqual(["Saudi Arabia"]);
+    const three = await sendOutreach({ userId: "owner-1", phone: "+965501234567", name: "Family in Kuwait", text: "Hi", allowExisting: true });
+    expect(three.tags).toEqual(["Kuwait"]);
+    const none = await sendOutreach({ userId: "owner-1", phone: "+971501234569", name: "Family (classifieds)", templateName: "ad_reply", templateParams: ["your area"] });
+    expect(none.tags).toEqual([]);
   });
 
   it("refuses an unknown intent", async () => {

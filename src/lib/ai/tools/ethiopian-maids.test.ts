@@ -499,6 +499,49 @@ describe('resolveSponsorCountry', () => {
   });
 });
 
+/** tags / conversations / contact_tags the way rememberContactTag reads and writes them. */
+function fakeTagDb() {
+  const tags: Array<{ id: string; user_id: string; name: string }> = [];
+  const links: Array<{ contact_id: string; tag_id: string }> = [];
+  const client = {
+    from(table: string) {
+      if (table === 'tags') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: (_k: string, name: string) => ({
+                maybeSingle: async () => ({ data: tags.find((t) => t.name === name) ?? null }),
+              }),
+            }),
+          }),
+          insert: (row: { user_id: string; name: string }) => ({
+            select: () => ({
+              single: async () => {
+                const created = { id: `tag-${tags.length + 1}`, ...row };
+                tags.push(created);
+                return { data: created };
+              },
+            }),
+          }),
+        };
+      }
+      if (table === 'conversations') {
+        return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { contact_id: 'ct-1' } }) }) }) };
+      }
+      if (table === 'contact_tags') {
+        return {
+          upsert: async (row: { contact_id: string; tag_id: string }) => {
+            if (!links.some((l) => l.contact_id === row.contact_id && l.tag_id === row.tag_id)) links.push(row);
+            return { error: null };
+          },
+        };
+      }
+      throw new Error(`unexpected table ${table}`);
+    },
+  };
+  return { tags, links, client };
+}
+
 describe('searchMaids.handler — the market filter', () => {
   function ctxFor() {
     return {
@@ -548,6 +591,39 @@ describe('searchMaids.handler — the market filter', () => {
       preferred_salary_max: { _lte: 1500 },
       _and: [{ _or: [{ preferred_currency: { _eq: 'SAR' } }, { preferred_currency: { _is_null: true } }] }],
     });
+  });
+
+  it('falls back to the market on record when the model gives no country', async () => {
+    const captured: Array<Record<string, unknown>> = [];
+    stubHasura(captured);
+    const ctx = { ...ctxFor(), market: { iso: 'SA', currency: 'SAR', name: 'Saudi Arabia' } } as unknown as ToolContext;
+    const res = await searchMaids.handler({ live_in_preference: true }, ctx) as Record<string, unknown>;
+    expect(captured[0].where).toEqual({
+      availability_status: { _eq: 'available' },
+      is_approved: { _eq: true },
+      live_in_preference: { _eq: true },
+      _and: [{ _or: [{ preferred_currency: { _eq: 'SAR' } }, { preferred_currency: { _is_null: true } }] }],
+    });
+    expect(res.market_source).toBe('contact');
+    expect(String(res.note)).toMatch(/on record/);
+    // The model's own country still wins over the record.
+    const again = await searchMaids.handler({ country: 'Doha' }, ctx) as Record<string, unknown>;
+    expect(again.market).toMatchObject({ iso: 'QA' });
+    expect(again.market_source).toBe('argument');
+  });
+
+  it('remembers a market the model gave as a tag on the contact, once', async () => {
+    const captured: Array<Record<string, unknown>> = [];
+    stubHasura(captured);
+    const db = fakeTagDb();
+    const ctx = { ...ctxFor(), userId: 'owner-1', supabase: db.client } as unknown as ToolContext;
+    await searchMaids.handler({ country: 'Al Ahsa' }, ctx);
+    expect(db.tags).toEqual([{ id: 'tag-1', user_id: 'owner-1', name: 'Saudi Arabia' }]);
+    expect(db.links).toEqual([{ contact_id: 'ct-1', tag_id: 'tag-1' }]);
+    // Same market already on record: nothing written.
+    const known = { ...ctx, market: { iso: 'SA', currency: 'SAR', name: 'Saudi Arabia' } } as unknown as ToolContext;
+    await searchMaids.handler({ country: 'Riyadh' }, known);
+    expect(db.links).toHaveLength(1);
   });
 
   it('no country, or one outside the GCC: no market clause, and the model is told', async () => {

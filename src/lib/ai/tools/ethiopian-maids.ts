@@ -25,6 +25,9 @@ import {
 } from '@/lib/whatsapp/meta-api';
 import { sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
 import type { ToolHandler, ToolContext } from './registry';
+import { resolveSponsorCountry } from '../markets';
+
+export { resolveSponsorCountry, type SponsorMarket } from '../markets';
 
 function ensureHasura(ctx: ToolContext) {
   if (!ctx.hasuraUrl) {
@@ -70,56 +73,41 @@ const SEARCH_MAIDS_GQL = /* GraphQL */ `
 `;
 
 /**
- * The GCC markets a sponsor can be in, keyed by ISO code, with the
- * currency candidates are priced in for that market and the spellings a
- * customer (or our own outreach message) uses for it. The public maid view
- * carries no "destination country" column — the maid's preferred countries
- * live in a jsonb the view does not expose — so `preferred_currency` is the
- * one field that says which market a candidate is priced for: a maid at
- * 120–150 KWD/mo is a Kuwait candidate, whatever her current location.
+ * Put a tag on this conversation's contact, creating it once (exact name).
+ * Used to remember the sponsor's market ("UAE", "Saudi Arabia") so it
+ * outlives the agent's history window. Non-fatal.
  */
-const GCC_MARKETS: Array<{ iso: string; currency: string; name: string; places: string[] }> = [
-  { iso: 'AE', currency: 'AED', name: 'UAE', places: ['uae', 'united arab emirates', 'emirates', 'dubai', 'abu dhabi', 'sharjah', 'ajman', 'fujairah', 'ras al khaimah', 'rak', 'umm al quwain', 'al ain', 'al shamkha', 'khalifa city', 'jumeirah', 'deira'] },
-  { iso: 'SA', currency: 'SAR', name: 'Saudi Arabia', places: ['saudi', 'saudi arabia', 'ksa', 'riyadh', 'al riyadh', 'jeddah', 'jiddah', 'dammam', 'al ahsa', 'al hasa', 'hofuf', 'al khobar', 'khobar', 'dhahran', 'jubail', 'mecca', 'makkah', 'medina', 'madinah', 'tabuk', 'abha', 'taif', 'qatif', 'buraidah', 'hail', 'najran', 'yanbu'] },
-  { iso: 'KW', currency: 'KWD', name: 'Kuwait', places: ['kuwait', 'kuwait city', 'hawalli', 'salmiya', 'farwaniya', 'jahra', 'ahmadi', 'mubarak al kabeer'] },
-  { iso: 'QA', currency: 'QAR', name: 'Qatar', places: ['qatar', 'doha', 'al rayyan', 'al wakrah', 'lusail', 'al khor'] },
-  { iso: 'BH', currency: 'BHD', name: 'Bahrain', places: ['bahrain', 'manama', 'muharraq', 'riffa', 'isa town', 'hamad town'] },
-  { iso: 'OM', currency: 'OMR', name: 'Oman', places: ['oman', 'muscat', 'salalah', 'sohar', 'seeb', 'nizwa', 'sur'] },
-];
-
-export interface SponsorMarket {
-  iso: string;
-  currency: string;
-  name: string;
-}
-
-/**
- * The market behind whatever the customer said about where they are —
- * an ISO code, a country, an emirate, a city, or a longer phrase such as
- * "Al Shamkha, Abu Dhabi". Whole words only, so "Romania" is not Oman.
- * Null outside the GCC. Pure — exported for tests.
- */
-export function resolveSponsorCountry(input: unknown): SponsorMarket | null {
-  if (typeof input !== 'string') return null;
-  const text = input
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-  if (!text) return null;
-  const upper = input.trim().toUpperCase();
-  for (const market of GCC_MARKETS) {
-    if (upper === market.iso) return { iso: market.iso, currency: market.currency, name: market.name };
+async function rememberContactTag(ctx: ToolContext, name: string): Promise<void> {
+  try {
+    const { data: existingTag } = await ctx.supabase
+      .from('tags')
+      .select('id')
+      .eq('user_id', ctx.userId)
+      .eq('name', name)
+      .maybeSingle();
+    let tagId = existingTag?.id as string | undefined;
+    if (!tagId) {
+      const { data: newTag } = await ctx.supabase
+        .from('tags')
+        .insert({ user_id: ctx.userId, name })
+        .select('id')
+        .single();
+      tagId = newTag?.id;
+    }
+    if (!tagId) return;
+    const { data: conv } = await ctx.supabase
+      .from('conversations')
+      .select('contact_id')
+      .eq('id', ctx.conversationId)
+      .maybeSingle();
+    if (conv?.contact_id) {
+      await ctx.supabase
+        .from('contact_tags')
+        .upsert({ contact_id: conv.contact_id, tag_id: tagId }, { onConflict: 'contact_id,tag_id' });
+    }
+  } catch (e) {
+    console.warn('[search_maids] could not remember the market tag (non-fatal):', e instanceof Error ? e.message : e);
   }
-  // Longest spelling first so "abu dhabi" beats nothing shorter that might sit inside it.
-  const candidates = GCC_MARKETS.flatMap((m) => m.places.map((place) => ({ place, market: m })))
-    .sort((a, b) => b.place.length - a.place.length);
-  for (const { place, market } of candidates) {
-    const re = new RegExp(`(^|\\s)${place.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`);
-    if (re.test(text)) return { iso: market.iso, currency: market.currency, name: market.name };
-  }
-  return null;
 }
 
 export const searchMaids: ToolHandler = {
@@ -138,7 +126,8 @@ export const searchMaids: ToolHandler = {
         type: 'string',
         description:
           "Where the sponsor is: a GCC country, emirate or city in any spelling — 'UAE', 'Dubai', 'Abu Dhabi', 'Riyadh', 'Al Ahsa', 'Kuwait', 'Doha', 'Manama', 'Muscat'. " +
-          'Keeps only candidates priced for that market. ALWAYS pass it once known.',
+          'Keeps only candidates priced for that market. ALWAYS pass it once known; when omitted, the market on record for this customer (SPONSOR MARKET in your context) is used. ' +
+          'Never infer it from the currency on an earlier card.',
       },
       live_in_preference: {
         type: 'boolean',
@@ -196,7 +185,15 @@ export const searchMaids: ToolHandler = {
     const groups: unknown[] = [];
     // The sponsor's market: candidates priced in its currency, plus those
     // not priced yet (no currency on file) so a new profile is not hidden.
-    const market = resolveSponsorCountry(args.country);
+    // What the model passes wins; otherwise the market on the contact's
+    // tags (set by outreach from the ad's city, or by an earlier search)
+    // — the customer's "Dubai" may have left the 20-message window.
+    const given = resolveSponsorCountry(args.country);
+    const market = given ?? ctx.market ?? null;
+    const marketSource: 'argument' | 'contact' | null = given ? 'argument' : ctx.market ? 'contact' : null;
+    if (given && given.iso !== ctx.market?.iso) {
+      await rememberContactTag(ctx, given.name);
+    }
     if (market) {
       groups.push({ _or: [{ preferred_currency: { _eq: market.currency } }, { preferred_currency: { _is_null: true } }] });
     }
@@ -222,13 +219,14 @@ export const searchMaids: ToolHandler = {
       );
       const maids = data.maid_profiles_public ?? [];
       const marketNote = market
-        ? ` Candidates shown are priced for ${market.name} (${market.currency}).`
+        ? ` Candidates shown are priced for ${market.name} (${market.currency})${marketSource === 'contact' ? ' — the market on record for this customer' : ''}.`
         : typeof args.country === 'string' && args.country.trim()
           ? ` "${args.country}" is not a GCC place we serve — the search ran without a market filter; confirm the country with the customer (we place in the UAE, Saudi Arabia, Kuwait, Qatar, Bahrain and Oman).`
           : ' No country was given, so candidates from every market are mixed in — pass country next time.';
       return {
         count: maids.length,
         market,
+        market_source: marketSource,
         maids,
         note:
           (maids.length === 0

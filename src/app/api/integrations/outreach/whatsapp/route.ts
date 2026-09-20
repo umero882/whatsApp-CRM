@@ -26,7 +26,10 @@ import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rate-limit
  *   intent?: "sponsor" | "job_seeker", who this is — becomes the contact's role tag,
  *                                      which the AI agent starts from when the reply
  *                                      itself carries no hire/work keyword
- *   tags?: ["Prospect"]                labels for the inbox (created when new)
+ *   tags?: ["Prospect"],               labels for the inbox (created when new)
+ *   country?: "United Arab Emirates"   or an emirate/city — the market tag the
+ *                                      agent's candidate search keeps to
+ *                                      (read from the template's city when omitted)
  * }
  * 200 { success, contact_id, conversation_id, message_id, whatsapp_message_id,
  *       contact_created, conversation_created, tags }
@@ -76,6 +79,7 @@ export async function POST(request: Request) {
       allowExisting: body.allow_existing === true,
       intent: typeof body.intent === "string" ? (body.intent as OutreachIntent) : null,
       tags,
+      country: typeof body.country === "string" ? body.country : null,
     });
     return NextResponse.json({
       success: true,
