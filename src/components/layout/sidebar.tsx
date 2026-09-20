@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { NavLink } from "./nav-link";
 import { usePathname } from "next/navigation";
 import { useEffect } from "react";
 import { cn } from "@/lib/utils";
@@ -127,14 +128,14 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
         {/* Logo row. On mobile we put a close button here; on desktop the
             close button is hidden since the sidebar is always-visible. */}
         <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-slate-800 px-4">
-          <Link href="/dashboard" className="flex items-center gap-2">
+          <NavLink href="/dashboard" className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
               <MessageSquare className="h-4 w-4" />
             </div>
             <span className="text-sm font-semibold text-white">
               CRM Template for WhatsApp
             </span>
-          </Link>
+          </NavLink>
           <button
             type="button"
             onClick={onClose}
@@ -158,7 +159,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
 
               return (
                 <li key={item.href}>
-                  <Link
+                  <NavLink
                     href={item.href}
                     className={cn(
                       // Taller on mobile so fingers can hit the row reliably (≥44px).
@@ -187,7 +188,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
                         <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
                       </span>
                     )}
-                  </Link>
+                  </NavLink>
                 </li>
               );
             })}
@@ -200,7 +201,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
               const isActive = pathname.startsWith(item.href);
               return (
                 <li key={item.href}>
-                  <Link
+                  <NavLink
                     href={item.href}
                     className={cn(
                       "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors lg:py-2",
@@ -211,7 +212,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
                   >
                     <item.icon className="h-4 w-4" />
                     {item.label}
-                  </Link>
+                  </NavLink>
                 </li>
               );
             })}
