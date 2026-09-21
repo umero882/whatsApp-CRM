@@ -128,7 +128,9 @@ export function MessageComposer({
           disabled={sessionExpired}
           rows={1}
           className={cn(
-            "flex-1 resize-none rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none transition-colors focus:border-primary/50",
+            // text-base below md: iOS Safari zooms the page when a focused
+            // input's font-size is under 16px, and never zooms back out.
+            "flex-1 resize-none rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-base text-white placeholder-slate-500 outline-none transition-colors focus:border-primary/50 md:text-sm",
             sessionExpired && "cursor-not-allowed opacity-50"
           )}
         />

@@ -27,7 +27,7 @@ function DashboardShellInner({ children }: { children: React.ReactNode }) {
 
   if (loading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-slate-950">
+      <div className="flex h-dvh items-center justify-center bg-slate-950">
         <div className="flex flex-col items-center gap-3">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           <p className="text-sm text-slate-400">Loading...</p>
@@ -38,8 +38,13 @@ function DashboardShellInner({ children }: { children: React.ReactNode }) {
 
   if (!user) return null;
 
+  // h-dvh, not h-screen: on phones 100vh is the *large* viewport (URL bar
+  // collapsed), so with the bar showing the shell is taller than the screen
+  // and, being overflow-hidden, hides whatever sits at the bottom -- in the
+  // inbox that is the composer. dvh tracks the visible area; on desktop the
+  // two units are identical.
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-950">
+    <div className="flex h-dvh overflow-hidden bg-slate-950">
       <Sidebar open={sidebarOpen} onClose={closeSidebar} />
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header onOpenSidebar={() => setSidebarOpen(true)} />
