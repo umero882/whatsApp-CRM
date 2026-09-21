@@ -127,6 +127,21 @@ diagnose() {
     || warn "docker ps failed"
   echo "  restart count: $(docker inspect --format '{{.RestartCount}}' "$(docker ps -q --filter 'name=l13cxwi' | head -1)" 2>/dev/null || echo '?')"
 
+  hr "Maintenance page readable by the nginx worker?"
+  # A 403 on crm.* during a deploy (instead of the 503 maintenance page)
+  # means the worker could not open the page: the error_page redirect
+  # itself fails and nginx reports that failure.
+  nginx_user="$(grep -oP '^\s*user\s+\K[^; ]+' /etc/nginx/nginx.conf 2>/dev/null || echo www-data)"
+  if [ ! -e "$MAINT_FILE" ]; then
+    warn "${MAINT_FILE} missing — run apply"
+  elif sudo -u "$nginx_user" test -r "$MAINT_FILE" 2>/dev/null; then
+    ok "${MAINT_FILE} readable by ${nginx_user}"
+  else
+    bad "${MAINT_FILE} NOT readable by ${nginx_user} -> deploy windows return 403, not 503"
+    echo "       fix: chmod 755 ${MAINT_ROOT}; chmod 644 ${MAINT_FILE}   (apply does this now)"
+    ls -la "$MAINT_ROOT" 2>/dev/null | sed 's/^/       /'
+  fi
+
   hr "nginx error log — 502 root-cause fingerprints (last 20000 lines)"
   local log logs
   logs="$(ls -1 /var/log/nginx/*error*.log 2>/dev/null)"
@@ -240,6 +255,14 @@ EOF
 </div>
 <script>setTimeout(function(){location.reload()}, 5000)</script>
 EOF
+  # root's umask on this host is 027, so mkdir/cat above produce 750/640
+  # root-owned paths that the www-data worker cannot open. nginx then fails
+  # the error_page internal redirect and answers 403 instead of the
+  # maintenance page -- exactly what the 2026-09-20 deploy window served
+  # ("open() ... failed (13: Permission denied)" in error.log). Make both
+  # world-readable; the page holds nothing sensitive.
+  chmod 755 "$MAINT_ROOT"
+  chmod 644 "$MAINT_FILE"
 
   mkdir -p "$(dirname "$SNIPPET")"
   cat > "$SNIPPET" <<EOF
