@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { forbidUnlessOwner } from '@/lib/auth/owner';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import { buildVapiOutboundBody, normalizeDialNumber } from '@/lib/calls/outbound';
 import {
@@ -30,6 +31,10 @@ export async function POST(request: Request) {
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+    // The call is placed with the operator's Vapi account and phone number,
+    // so only the operator may place one. See lib/auth/owner.ts.
+    const forbidden = await forbidUnlessOwner(user.id);
+    if (forbidden) return forbidden;
 
     const limit = checkRateLimit(`call:${user.id}`, RATE_LIMITS.outboundCall);
     if (!limit.success) return rateLimitResponse(limit);

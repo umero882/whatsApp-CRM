@@ -71,11 +71,24 @@ describe('verifyPubSubPush', () => {
     expect(ok).toBe(false);
   });
 
-  it('allows a verified token when EMAIL_PUBSUB_SA_EMAIL is not configured', async () => {
+  it('denies a verified token when EMAIL_PUBSUB_SA_EMAIL is not configured (fail closed)', async () => {
+    // Any GCP account can mint an ID token for our audience; without the SA
+    // email pinned, "verified by Google" proves nothing about the sender.
     process.env.EMAIL_PUBSUB_AUDIENCE = 'https://example.com/api/email/pubsub';
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     jwtVerify.mockResolvedValueOnce({ payload: { email: 'whatever@x.iam.gserviceaccount.com' } });
     const ok = await verifyPubSubPush(reqWithToken('tok'));
-    expect(ok).toBe(true);
+    expect(ok).toBe(false);
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it('denies when the SA email is configured but the token carries none', async () => {
+    process.env.EMAIL_PUBSUB_AUDIENCE = 'https://example.com/api/email/pubsub';
+    process.env.EMAIL_PUBSUB_SA_EMAIL = 'pubsub-pusher@my-project.iam.gserviceaccount.com';
+    jwtVerify.mockResolvedValueOnce({ payload: {} });
+    const ok = await verifyPubSubPush(reqWithToken('tok'));
+    expect(ok).toBe(false);
   });
 
   it('denies when EMAIL_PUBSUB_SA_EMAIL is set but the token email does not match', async () => {

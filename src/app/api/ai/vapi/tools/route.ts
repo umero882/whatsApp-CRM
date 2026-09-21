@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
+import { MobileOwnerError, resolveOwnerUserId } from '@/lib/mobile/auth';
 import { decrypt } from '@/lib/whatsapp/encryption';
 import { makeHasuraClient } from '@/lib/ai/tools/hasura';
 import { searchKb } from '@/lib/ai/kb';
@@ -209,11 +210,23 @@ export async function POST(request: Request) {
   }
 
   const sb = supabaseAdmin();
-  // Single-operator deployment: the owner is the (only) agent-config row.
+  // Single-operator deployment: the voice agent serves the operator. Resolve
+  // that account explicitly rather than taking "the first agent-config row" —
+  // any self-registered user can create their own row, and an unordered
+  // limit(1) would let it be the one the voice bot searches with.
+  let ownerId: string;
+  try {
+    ownerId = await resolveOwnerUserId();
+  } catch (e) {
+    if (e instanceof MobileOwnerError) {
+      return NextResponse.json({ error: e.message }, { status: e.status });
+    }
+    throw e;
+  }
   const { data: agent } = await sb
     .from('ai_agent_config')
     .select('user_id, hasura_url, encrypted_hasura_admin_secret')
-    .limit(1)
+    .eq('user_id', ownerId)
     .maybeSingle();
 
   const results = [];

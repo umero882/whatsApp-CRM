@@ -76,7 +76,8 @@ export function OutboundCallDialog({ open, onOpenChange, target, onPlaced }: Out
     }
     searchTimer.current = setTimeout(async () => {
       setSearching(true);
-      const like = `%${term.trim()}%`;
+      // Strip characters that would break out of a PostgREST `.or` filter string.
+      const like = `%${term.replace(/[,()*%\\]/g, "").trim()}%`;
       const { data } = await createClient()
         .from('contacts')
         .select('id, name, phone')
