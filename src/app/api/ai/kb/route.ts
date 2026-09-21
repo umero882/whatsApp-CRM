@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { forbidUnlessOwner } from '@/lib/auth/owner';
 import { ingestDocument } from '@/lib/ai/kb';
 
 /**
@@ -30,6 +31,9 @@ export async function POST(request: Request) {
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+  // Ingestion embeds with the operator's OPENAI_API_KEY. See lib/auth/owner.ts.
+  const forbidden = await forbidUnlessOwner(user.id);
+  if (forbidden) return forbidden;
 
   let body: { title?: unknown; content?: unknown };
   try {

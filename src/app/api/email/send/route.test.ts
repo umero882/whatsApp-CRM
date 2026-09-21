@@ -8,6 +8,11 @@ vi.mock('@/lib/supabase/server', () => ({
     auth: { getUser: async () => ({ data: { user: authUser }, error: null }) },
   }),
 }));
+let ownerId = 'u1';
+vi.mock('@/lib/mobile/auth', () => ({
+  resolveOwnerUserId: async () => ownerId,
+  MobileOwnerError: class extends Error { readonly status = 503; },
+}));
 vi.mock('@/lib/email/conversation-send', () => ({
   sendEmailConversationMessage: (args: unknown) => sendSpy(args),
 }));
@@ -29,6 +34,7 @@ function post(body: unknown): Request {
 
 beforeEach(() => {
   authUser = { id: 'u1' };
+  ownerId = 'u1';
   sendSpy.mockClear();
 });
 
@@ -38,6 +44,13 @@ describe('POST /api/email/send', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ success: true, message_id: 'm-1', email_message_id: 'eml-1' });
     expect(sendSpy).toHaveBeenCalledWith({ userId: 'u1', conversationId: 'conv-1', text: 'Here is how.' });
+  });
+
+  it('rejects a signed-in user who is not the operator (mail leaves via the operator mailbox)', async () => {
+    authUser = { id: 'stranger-9' };
+    const res = await POST(post({ conversation_id: 'conv-1', content_text: 'phish' }));
+    expect(res.status).toBe(403);
+    expect(sendSpy).not.toHaveBeenCalled();
   });
 
   it('rejects an unauthenticated request', async () => {

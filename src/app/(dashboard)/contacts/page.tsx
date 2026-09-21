@@ -98,8 +98,11 @@ export default function ContactsPage() {
       .order('created_at', { ascending: false })
       .range(from, to);
 
-    if (search.trim()) {
-      const term = `%${search.trim()}%`;
+    // Strip characters that would break out of a PostgREST `.or` filter string
+    // (same rule as api/mobile/whatsapp/conversations).
+    const safe = search.replace(/[,()*%\\]/g, "").trim();
+    if (safe) {
+      const term = `%${safe}%`;
       query = query.or(`name.ilike.${term},phone.ilike.${term},email.ilike.${term}`);
     }
 

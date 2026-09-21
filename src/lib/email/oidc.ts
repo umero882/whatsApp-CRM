@@ -23,10 +23,16 @@ export async function verifyPubSubPush(request: Request): Promise<boolean> {
     // Optional extra pin: Google Pub/Sub push tokens carry the pushing
     // service account's email in the `email` claim. When configured,
     // require it to match so only OUR push subscription's SA can invoke us.
+    // Any GCP account can mint an ID token for an arbitrary audience, so the
+    // audience alone does not prove the push came from OUR subscription — the
+    // service-account email does. The runbook lists it as a required deploy
+    // var; treat it as such and fail closed rather than trust any Google token.
     const saEmail = process.env.EMAIL_PUBSUB_SA_EMAIL ?? '';
-    if (saEmail && payload.email !== saEmail) return false;
-
-    return true;
+    if (!saEmail) {
+      console.error('[email/pubsub] EMAIL_PUBSUB_SA_EMAIL is not set — rejecting push');
+      return false;
+    }
+    return payload.email === saEmail;
   } catch {
     return false;
   }

@@ -36,6 +36,7 @@ import {
   type AppCardLanguage,
 } from './tools/ethiopian-maids';
 import { searchKnowledgeBase } from './tools/knowledge-base';
+import { isOverTurnCap } from './turn-cap';
 import type { ToolHandler, ToolContext } from './tools/registry';
 import { findTool, toolsToSpecs } from './tools/registry';
 import { makeHasuraClient } from './tools/hasura';
@@ -202,6 +203,13 @@ async function runAgentInner(conversationId: string): Promise<AgentRunResult> {
 
   if (conv.ai_paused_until && new Date(conv.ai_paused_until).getTime() > Date.now()) {
     return { kind: 'skipped', reason: 'ai_paused' };
+  }
+
+  // Spend cap: one sender looping messages must not bill an unbounded
+  // number of LLM turns to the operator's key. See turn-cap.ts.
+  if (await isOverTurnCap(sb, conv.id)) {
+    console.warn(`[ai-agent] turn cap reached for conversation ${conv.id}; leaving it to a human`);
+    return { kind: 'skipped', reason: 'turn_cap' };
   }
 
   // ─── Load agent + provider + WhatsApp config ────────────────────────

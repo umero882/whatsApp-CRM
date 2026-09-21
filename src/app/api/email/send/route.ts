@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { forbidUnlessOwner } from '@/lib/auth/owner';
 import { sendEmailConversationMessage } from '@/lib/email/conversation-send';
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit';
 
@@ -21,6 +22,10 @@ export async function POST(request: Request): Promise<Response> {
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+    // Mail goes out through the operator's mailbox (EMAIL_MAILBOX), not the
+    // caller's — so only the operator may send. See lib/auth/owner.ts.
+    const forbidden = await forbidUnlessOwner(user.id);
+    if (forbidden) return forbidden;
 
     const limit = checkRateLimit(`send:${user.id}`, RATE_LIMITS.send);
     if (!limit.success) return rateLimitResponse(limit);
