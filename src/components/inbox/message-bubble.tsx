@@ -118,10 +118,16 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
 }
 
 function MessageContent({ message }: { message: Message }) {
+  // wrap-anywhere (overflow-wrap: anywhere), not break-words: break-word
+  // wraps a long token visually but leaves the paragraph's min-content
+  // width at the token's full length, and the bubble is shrink-to-fit, so a
+  // maid-profile URL made it wider than the row's max-w cap and, on phones,
+  // spilled off the left edge of the thread. `anywhere` counts the break
+  // opportunity toward min-content, so the bubble can actually shrink.
   switch (message.content_type) {
     case "text":
       return (
-        <p className="whitespace-pre-wrap break-words text-sm">
+        <p className="whitespace-pre-wrap wrap-anywhere text-sm">
           {message.content_text}
         </p>
       );
@@ -135,7 +141,7 @@ function MessageContent({ message }: { message: Message }) {
             <MediaUnavailable label="Image" />
           )}
           {message.content_text && (
-            <p className="mt-1 whitespace-pre-wrap break-words text-sm">
+            <p className="mt-1 whitespace-pre-wrap wrap-anywhere text-sm">
               {message.content_text}
             </p>
           )}
@@ -155,7 +161,7 @@ function MessageContent({ message }: { message: Message }) {
             <MediaUnavailable label="Video" />
           )}
           {message.content_text && (
-            <p className="mt-1 whitespace-pre-wrap break-words text-sm">
+            <p className="mt-1 whitespace-pre-wrap wrap-anywhere text-sm">
               {message.content_text}
             </p>
           )}
@@ -199,7 +205,7 @@ function MessageContent({ message }: { message: Message }) {
             Template
           </span>
           {message.content_text && (
-            <p className="mt-1 whitespace-pre-wrap break-words text-sm">
+            <p className="mt-1 whitespace-pre-wrap wrap-anywhere text-sm">
               {message.content_text}
             </p>
           )}
@@ -226,7 +232,7 @@ function MessageContent({ message }: { message: Message }) {
             <CornerDownLeft className="h-3 w-3" />
             Button reply
           </span>
-          <p className="whitespace-pre-wrap break-words text-sm">
+          <p className="whitespace-pre-wrap wrap-anywhere text-sm">
             {message.content_text || "[Interactive reply]"}
           </p>
         </div>
@@ -235,7 +241,7 @@ function MessageContent({ message }: { message: Message }) {
 
     default:
       return (
-        <p className="whitespace-pre-wrap break-words text-sm">
+        <p className="whitespace-pre-wrap wrap-anywhere text-sm">
           {message.content_text || "[Unsupported message type]"}
         </p>
       );

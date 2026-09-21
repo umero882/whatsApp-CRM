@@ -38,10 +38,10 @@ export function ReplyQuote({
           panels, pushes the thread wider than the viewport. Wrapped text
           only contributes its longest word. */}
       <div className="min-w-0 flex-1">
-        <div className="line-clamp-1 break-words text-[11px] font-medium text-primary">
+        <div className="line-clamp-1 wrap-anywhere text-[11px] font-medium text-primary">
           {authorLabel}
         </div>
-        <div className="line-clamp-2 break-words text-xs text-slate-200/80">
+        <div className="line-clamp-2 wrap-anywhere text-xs text-slate-200/80">
           {preview}
         </div>
       </div>
