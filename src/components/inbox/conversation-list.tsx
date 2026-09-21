@@ -179,7 +179,7 @@ export function ConversationList({
             value={search}
             onChange={handleSearchChange}
             placeholder="Search conversations..."
-            className="border-slate-700 bg-slate-800 pl-9 text-sm text-white placeholder-slate-500 focus:border-primary/50"
+            className="border-slate-700 bg-slate-800 pl-9 text-base text-white placeholder-slate-500 focus:border-primary/50 md:text-sm"
           />
         </div>
 
