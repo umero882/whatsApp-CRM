@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, KeyboardEvent } from "react";
 import { Send, LayoutTemplate } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { ReplyQuote } from "./reply-quote";
 
 interface ReplyDraft {
@@ -57,6 +58,11 @@ export function MessageComposer({
       setSending(false);
     }
   }, [text, sending, sessionExpired, onSend, replyTo?.id]);
+
+  // The Shift+Enter hint only makes sense with a hardware keyboard, and on
+  // a phone the full sentence wraps to two lines inside the input. md
+  // matches Tailwind's `md:` breakpoint used for the input's font size.
+  const isDesktop = useMediaQuery("(min-width: 768px)");
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -123,7 +129,9 @@ export function MessageComposer({
           placeholder={
             sessionExpired
               ? "Session expired - use a template"
-              : "Type a message... (Shift+Enter for new line)"
+              : isDesktop
+                ? "Type a message... (Shift+Enter for new line)"
+                : "Type a message..."
           }
           disabled={sessionExpired}
           rows={1}
